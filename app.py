@@ -4,6 +4,7 @@ import sqlite3
 import calendar
 from datetime import datetime, date
 import plotly.graph_objects as go
+import plotly.express as px
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -13,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILIZAÇÃO CSS (Dark & Banners de Alerta) ---
+# --- ESTILIZAÇÃO CSS (Dark UI & Banners) ---
 st.markdown("""
 <style>
     .stApp {
@@ -84,7 +85,7 @@ try:
 except sqlite3.OperationalError:
     pass
 
-# Gastos fixos e parcelas
+# Despesas fixas e parcelas
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS despesas_fixas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +96,13 @@ CREATE TABLE IF NOT EXISTS despesas_fixas (
     total_parcelas INTEGER
 )
 """)
+
+for col_def in [("forma_pagamento", "TEXT DEFAULT 'Boleto / Débito'"), ("cartao_banco", "TEXT DEFAULT ''")]:
+    try:
+        cursor.execute(f"ALTER TABLE despesas_fixas ADD COLUMN {col_def[0]} {col_def[1]}")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 # Gastos diários
 cursor.execute("""
@@ -109,7 +117,14 @@ CREATE TABLE IF NOT EXISTS gastos_diarios (
 )
 """)
 
-# Patrimônio base
+for col_def in [("forma_pagamento", "TEXT DEFAULT 'PIX'"), ("cartao_banco", "TEXT DEFAULT ''")]:
+    try:
+        cursor.execute(f"ALTER TABLE gastos_diarios ADD COLUMN {col_def[0]} {col_def[1]}")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+# Patrimônio
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS patrimonio_base (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -118,7 +133,6 @@ CREATE TABLE IF NOT EXISTS patrimonio_base (
 """)
 cursor.execute("INSERT OR IGNORE INTO patrimonio_base (id, saldo_inicial) VALUES (1, 0.0)")
 
-# Aportes consolidados por mês
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS aportes_consolidados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,14 +176,14 @@ renda_mensal = config_row[0] if config_row else 10000.0
 meta_poupanca = config_row[1] if config_row else 1500.0
 modo_ajuste = config_row[2] if (config_row and config_row[2]) else "rebalancear"
 
-df_fixos = pd.read_sql_query("SELECT id, descricao, valor, tipo, parcela_atual, total_parcelas FROM despesas_fixas", conn)
+df_fixos = pd.read_sql_query("SELECT id, descricao, valor, tipo, parcela_atual, total_parcelas, forma_pagamento, cartao_banco FROM despesas_fixas", conn)
 total_fixos = df_fixos["valor"].sum() if not df_fixos.empty else 0.0
 
 saldo_livre_mes = max(0.0, renda_mensal - meta_poupanca - total_fixos)
 
-# Consulta de gastos lançados no mês
+# Consulta de gastos diários
 df_gastos = pd.read_sql_query(
-    "SELECT id, dia, descricao, categoria, valor FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC, id ASC",
+    "SELECT id, dia, descricao, categoria, valor, forma_pagamento, cartao_banco FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC, id ASC",
     conn, params=(ano_atual, mes_num)
 )
 gastos_por_dia = df_gastos.groupby("dia")["valor"].sum().to_dict() if not df_gastos.empty else {}
@@ -177,7 +191,7 @@ total_gasto_real = df_gastos["valor"].sum() if not df_gastos.empty else 0.0
 saldo_restante_caixa = saldo_livre_mes - total_gasto_real
 
 # =========================================================
-# LÓGICA DE SIMULAÇÃO DIA A DIA (DO DIA 1 AO FIM DO MÊS)
+# LÓGICA DE SIMULAÇÃO DIA A DIA
 # =========================================================
 dias_lista = []
 teto_lista = []
@@ -189,7 +203,6 @@ dia_negativo = None
 saldo_acum_check = saldo_livre_mes
 
 if modo_ajuste == "rebalancear":
-    # MODO 1: REBALANCEAMENTO DINÂMICO
     saldo_remanescente = saldo_livre_mes
     for d in range(1, dias_no_mes + 1):
         dias_a_frente = (dias_no_mes - d + 1)
@@ -227,7 +240,6 @@ if modo_ajuste == "rebalancear":
         cores_grafico.append(hex_c)
 
 else:
-    # MODO 2: ABATER DO FIM DO MÊS
     teto_base_fixo = saldo_livre_mes / dias_no_mes if dias_no_mes > 0 else 0.0
     saldo_acumulado = saldo_livre_mes
 
@@ -272,7 +284,7 @@ df_exibicao = pd.DataFrame({
 })
 
 # =========================================================
-# TELA 1: CALENDÁRIO ORÇAMENTÁRIO & GRÁFICO
+# TELA 1: CALENDÁRIO ORÇAMENTÁRIO & GRÁFICOS
 # =========================================================
 if menu == "📊 Calendário e Gráfico Diário":
     st.title(f"Acompanhamento — {mes_selecionado} de {ano_atual}")
@@ -323,6 +335,7 @@ if menu == "📊 Calendário e Gráfico Diário":
         </div>
         """, unsafe_allow_html=True)
 
+    # GRÁFICO DIÁRIO PRINCIPAL
     st.subheader("Desempenho por Dia: Teto Permitido vs. Gasto Real")
 
     dias_numeros = list(range(1, dias_no_mes + 1))
@@ -374,6 +387,108 @@ if menu == "📊 Calendário e Gráfico Diário":
         hide_index=True
     )
 
+    st.divider()
+
+    # --- SEÇÃO DE CARTÕES DE CRÉDITO E DÉBITO ---
+    st.subheader("💳 Raio-X dos Gastos nos Cartões")
+
+    # Filtra despesas com cartões no mês
+    df_cartoes = df_gastos[df_gastos["forma_pagamento"].str.contains("Cartão", na=False)].copy()
+
+    if not df_cartoes.empty:
+        df_cartoes["cartao_banco"] = df_cartoes["cartao_banco"].apply(
+            lambda x: x.strip() if pd.notna(x) and str(x).strip() != '' else 'Outro / Não Definido'
+        )
+
+        total_cartoes = df_cartoes["valor"].sum()
+        dias_com_cartao = df_cartoes["dia"].nunique()
+        media_dia_uso = (total_cartoes / dias_com_cartao) if dias_com_cartao > 0 else 0.0
+
+        # Resumo rápido em cards
+        c_c1, c_c2, c_c3 = st.columns(3)
+        with c_c1:
+            st.markdown(f"""
+            <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
+                <div class="metric-label">Total Gasto em Cartões</div>
+                <div class="metric-num">R$ {total_cartoes:,.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c_c2:
+            cartao_top = df_cartoes.groupby("cartao_banco")["valor"].sum().idxmax()
+            st.markdown(f"""
+            <div class="metric-card" style="border-top: 3px solid #ec4899;">
+                <div class="metric-label">Cartão Mais Utilizado</div>
+                <div class="metric-num" style="font-size: 19px;">{cartao_top}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c_c3:
+            st.markdown(f"""
+            <div class="metric-card" style="border-top: 3px solid #06b6d4;">
+                <div class="metric-label">Média por Dia de Compra</div>
+                <div class="metric-num">R$ {media_dia_uso:,.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        col_g1, col_g2 = st.columns(2)
+
+        # Gráfico 1: Total Gasto por Cartão
+        with col_g1:
+            tot_por_cartao = df_cartoes.groupby("cartao_banco")["valor"].sum().reset_index()
+            tot_por_cartao = tot_por_cartao.sort_values(by="valor", ascending=False)
+
+            fig_bar_cartao = px.bar(
+                tot_por_cartao,
+                x="cartao_banco",
+                y="valor",
+                text=tot_por_cartao["valor"].map(lambda x: f"R$ {x:,.2f}"),
+                color="cartao_banco",
+                color_discrete_sequence=["#8b5cf6", "#ec4899", "#38bdf8", "#10b981", "#f59e0b"]
+            )
+            fig_bar_cartao.update_layout(
+                template="plotly_dark",
+                title="Total por Cartão / Banco",
+                height=320,
+                margin=dict(l=10, r=10, t=35, b=10),
+                xaxis_title="",
+                yaxis_title="Total (R$)",
+                showlegend=False
+            )
+            fig_bar_cartao.update_traces(textposition="outside")
+            st.plotly_chart(fig_bar_cartao, use_container_width=True)
+
+        # Gráfico 2: Gastos por Dia nos Cartões
+        with col_g2:
+            dia_cartao = df_cartoes.groupby("dia")["valor"].sum().reset_index()
+
+            fig_dia_cartao = go.Figure()
+            fig_dia_cartao.add_trace(go.Bar(
+                x=dia_cartao["dia"].map(lambda d: f"Dia {d:02d}"),
+                y=dia_cartao["valor"],
+                name="Gasto no Dia",
+                marker_color="#8b5cf6",
+                text=dia_cartao["valor"].map(lambda x: f"R$ {x:,.2f}"),
+                textposition="outside"
+            ))
+            fig_dia_cartao.add_hline(
+                y=media_dia_uso,
+                line_dash="dash",
+                line_color="#f59e0b",
+                annotation_text=f"Média: R$ {media_dia_uso:,.2f}",
+                annotation_position="top right"
+            )
+            fig_dia_cartao.update_layout(
+                template="plotly_dark",
+                title="Gastos no Cartão por Dia de Uso",
+                height=320,
+                margin=dict(l=10, r=10, t=35, b=10),
+                xaxis_title="",
+                yaxis_title="Reais (R$)",
+                showlegend=False
+            )
+            st.plotly_chart(fig_dia_cartao, use_container_width=True)
+    else:
+        st.info("💳 Nenhum gasto em cartão registrado neste mês ainda. Ao registrar compras no cartão, os comparativos aparecerão aqui!")
+
 # =========================================================
 # TELA 2: CONFIGURAÇÃO DE RENDA E REGRAS
 # =========================================================
@@ -415,15 +530,18 @@ elif menu == "⚙️ Configurar Renda e Regras":
 elif menu == "💸 Lançar Gasto Diário":
     st.title("Registrar Gasto Diário")
 
-    with st.form("form_lancar", clear_on_submit=True):
+    st.subheader("Novo Lançamento Diário")
+    col_d, col_c = st.columns([1, 2])
+    with col_d:
         dia_sel = st.number_input(
             "Dia do Mês",
             min_value=1,
             max_value=dias_no_mes,
             value=min(date.today().day, dias_no_mes),
-            step=1
+            step=1,
+            key="gasto_dia_num"
         )
-
+    with col_c:
         lista_categorias = [
             "🍔 Alimentação",
             "🚗 Transporte",
@@ -433,34 +551,74 @@ elif menu == "💸 Lançar Gasto Diário":
             "🏠 Moradia / Contas",
             "✏️ Outra / Personalizar"
         ]
-        cat_sel = st.selectbox("Categoria", lista_categorias)
-        cat_custom = st.text_input("Se selecionou '✏️ Outra / Personalizar', digite o nome da categoria aqui:")
+        cat_sel = st.selectbox("Categoria", lista_categorias, key="gasto_cat_sel")
 
-        desc = st.text_input("Descrição do Gasto (ex: Almoço no shopping, Combustível, Farmácia)")
-        val = st.number_input("Valor da Despesa (R$)", min_value=0.5, step=5.0)
+    cat_custom = ""
+    if "Personalizar" in cat_sel:
+        cat_custom = st.text_input("Digite o nome da categoria personalizada:", key="gasto_cat_custom")
 
-        if st.form_submit_button("Confirmar Despesa"):
-            categoria_final = cat_custom.strip() if ("Personalizar" in cat_sel and cat_custom.strip()) else cat_sel
-            
-            if desc.strip() == "":
-                st.warning("Preencha a descrição do gasto.")
-            elif "Personalizar" in cat_sel and cat_custom.strip() == "":
-                st.warning("Você selecionou personalizar categoria. Por favor, digite o nome dela no campo correspondente.")
-            else:
-                cursor.execute("""
-                    INSERT INTO gastos_diarios (ano, mes, dia, descricao, categoria, valor)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (ano_atual, mes_num, int(dia_sel), desc, categoria_final, val))
-                conn.commit()
-                st.success(f"Despesa de R$ {val:,.2f} no Dia {int(dia_sel):02d} registrada na categoria '{categoria_final}'!")
-                st.rerun()
+    desc = st.text_input("Descrição do Gasto (ex: Almoço no shopping, Combustível, Farmácia)", key="gasto_desc_input")
+
+    col_v, col_p = st.columns([1, 1])
+    with col_v:
+        val = st.number_input("Valor da Despesa (R$)", min_value=0.5, step=5.0, key="gasto_val_input")
+    with col_p:
+        forma_pag = st.selectbox(
+            "Forma de Pagamento",
+            ["PIX", "Cartão de Crédito", "Cartão de Débito", "Dinheiro"],
+            key="gasto_forma_pag_input"
+        )
+
+    # Campo condicional para Cartão
+    cartao_banco_final = ""
+    if "Cartão" in forma_pag:
+        st.markdown("##### 💳 Qual cartão/banco foi utilizado?")
+        cursor.execute("SELECT DISTINCT cartao_banco FROM gastos_diarios WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+        usados_g = [r[0] for r in cursor.fetchall()]
+        cursor.execute("SELECT DISTINCT cartao_banco FROM despesas_fixas WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+        usados_f = [r[0] for r in cursor.fetchall()]
+
+        bancos_padrao = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
+        lista_opcoes_cartao = sorted(list(set(bancos_padrao + usados_g + usados_f)))
+        lista_opcoes_cartao.append("✏️ Digitar outro banco / cartão...")
+
+        cartao_escolhido = st.selectbox("Selecione o Cartão / Banco", lista_opcoes_cartao, key="gasto_cartao_sel")
+        if "Digitar outro" in cartao_escolhido:
+            cartao_banco_final = st.text_input("Escreva o nome do Cartão / Banco (ex: XP, Sicredi):", key="gasto_cartao_outro")
+        else:
+            cartao_banco_final = cartao_escolhido
+
+    if st.button("Confirmar Despesa", type="primary", key="btn_conf_despesa"):
+        categoria_final = cat_custom.strip() if ("Personalizar" in cat_sel and cat_custom.strip()) else cat_sel
+        if desc.strip() == "":
+            st.warning("Preencha a descrição do gasto.")
+        elif "Personalizar" in cat_sel and cat_custom.strip() == "":
+            st.warning("Por favor, digite o nome da categoria personalizada.")
+        elif "Cartão" in forma_pag and cartao_banco_final.strip() == "":
+            st.warning("Por favor, informe qual cartão/banco foi utilizado.")
+        else:
+            cursor.execute("""
+                INSERT INTO gastos_diarios (ano, mes, dia, descricao, categoria, valor, forma_pagamento, cartao_banco)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ano_atual, mes_num, int(dia_sel), desc, categoria_final, val, forma_pag, cartao_banco_final.strip()))
+            conn.commit()
+            st.success(f"Despesa de R$ {val:,.2f} no Dia {int(dia_sel):02d} registrada com sucesso!")
+            st.rerun()
+
+    st.divider()
 
     st.subheader("Histórico de Gastos Deste Mês")
     if not df_gastos.empty:
-        df_exibir = df_gastos[["dia", "descricao", "categoria", "valor"]].copy()
-        df_exibir.columns = ["Dia", "Descrição", "Categoria", "Valor"]
+        df_exibir = df_gastos.copy()
+        df_exibir["Pagamento"] = df_exibir.apply(
+            lambda r: f"{r['forma_pagamento']} ({r['cartao_banco']})" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else r.get('forma_pagamento', '-'),
+            axis=1
+        )
+        tabela_gastos = df_exibir[["dia", "descricao", "categoria", "Pagamento", "valor"]].copy()
+        tabela_gastos.columns = ["Dia", "Descrição", "Categoria", "Forma de Pagamento", "Valor"]
+
         st.dataframe(
-            df_exibir.style.format({"Valor": "R$ {:,.2f}"}),
+            tabela_gastos.style.format({"Valor": "R$ {:,.2f}"}),
             use_container_width=True,
             hide_index=True
         )
@@ -469,7 +627,9 @@ elif menu == "💸 Lançar Gasto Diário":
         st.caption("Selecione um lançamento cadastrado por engano para removê-lo da sua base:")
 
         opcoes_para_excluir = {
-            f"Dia {int(r['dia']):02d} | {r['descricao']} ({r['categoria']}) — R$ {r['valor']:,.2f} (Cód #{r['id']})": int(r['id'])
+            f"Dia {int(r['dia']):02d} | {r['descricao']} ({r['categoria']})" +
+            (f" [{r['cartao_banco']}]" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else f" [{r.get('forma_pagamento', 'PIX')}]") +
+            f" — R$ {r['valor']:,.2f} (Cód #{r['id']})": int(r['id'])
             for _, r in df_gastos.iterrows()
         }
 
@@ -489,30 +649,69 @@ elif menu == "💸 Lançar Gasto Diário":
         st.info("Nenhum gasto avulso registrado neste mês ainda.")
 
 # =========================================================
-# TELA 4: GASTOS FIXOS E PARCELAS (ATUALIZADA COM CANCELAMENTO SEGURO)
+# TELA 4: GASTOS FIXOS E PARCELAS
 # =========================================================
 elif menu == "📌 Gastos Fixos & Parcelas":
     st.title("Despesas Fixas e Parcelamentos")
 
-    with st.form("form_fixo", clear_on_submit=True):
-        st.subheader("Novo Lançamento Fixo / Parcela")
-        f_nome = st.text_input("Nome da Conta (ex: Aluguel, Plano de Saúde, Parcela Celular)")
-        f_val = st.number_input("Valor Mensal (R$)", min_value=1.0, step=10.0)
-        f_tipo = st.selectbox("Tipo de Conta", ["Fixo Contínuo", "Parcelamento"])
+    st.subheader("Novo Lançamento Fixo / Parcela")
+    f_nome = st.text_input("Nome da Conta (ex: Aluguel, Parcela Notebook, Academia)", key="fixo_nome_input")
 
-        c1, c2 = st.columns(2)
-        p_at = c1.number_input("Parcela Atual (se for parcelado)", min_value=1, value=1)
-        p_tot = c2.number_input("Total de Parcelas (se for parcelado)", min_value=1, value=1)
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        f_val = st.number_input("Valor Mensal (R$)", min_value=1.0, step=10.0, key="fixo_val_input")
+    with c2:
+        f_tipo = st.selectbox("Tipo de Conta", ["Fixo Contínuo", "Parcelamento"], key="fixo_tipo_input")
 
-        if st.form_submit_button("Salvar Despesa Fixa"):
+    p_at = 1
+    p_tot = 1
+    if "Parcelamento" in f_tipo:
+        cp1, cp2 = st.columns(2)
+        with cp1:
+            p_at = cp1.number_input("Parcela Atual", min_value=1, value=1, key="fixo_pat_input")
+        with cp2:
+            p_tot = cp2.number_input("Total de Parcelas", min_value=1, value=1, key="fixo_ptot_input")
+
+    f_forma_pag = st.selectbox(
+        "Forma de Pagamento",
+        ["Boleto / Débito em Conta", "Cartão de Crédito", "PIX", "Dinheiro"],
+        key="fixo_forma_pag_input"
+    )
+
+    f_cartao_banco_final = ""
+    if "Cartão" in f_forma_pag:
+        st.markdown("##### 💳 Qual cartão de crédito foi utilizado?")
+        cursor.execute("SELECT DISTINCT cartao_banco FROM gastos_diarios WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+        usados_g = [r[0] for r in cursor.fetchall()]
+        cursor.execute("SELECT DISTINCT cartao_banco FROM despesas_fixas WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+        usados_f = [r[0] for r in cursor.fetchall()]
+
+        bancos_padrao = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
+        lista_opcoes_cartao_fix = sorted(list(set(bancos_padrao + usados_g + usados_f)))
+        lista_opcoes_cartao_fix.append("✏️ Digitar outro banco / cartão...")
+
+        f_cartao_escolhido = st.selectbox("Selecione o Cartão / Banco", lista_opcoes_cartao_fix, key="fixo_cartao_sel")
+        if "Digitar outro" in f_cartao_escolhido:
+            f_cartao_banco_final = st.text_input("Escreva o nome do Cartão / Banco:", key="fixo_cartao_outro")
+        else:
+            f_cartao_banco_final = f_cartao_escolhido
+
+    if st.button("Salvar Despesa Fixa", type="primary", key="btn_salvar_fixo"):
+        if f_nome.strip() == "":
+            st.warning("Preencha o nome da conta.")
+        elif "Cartão" in f_forma_pag and f_cartao_banco_final.strip() == "":
+            st.warning("Por favor, informe qual cartão foi utilizado.")
+        else:
             tipo_bd = "Parcela" if "Parcelamento" in f_tipo else "Fixo"
             cursor.execute("""
-                INSERT INTO despesas_fixas (descricao, valor, tipo, parcela_atual, total_parcelas)
-                VALUES (?, ?, ?, ?, ?)
-            """, (f_nome, f_val, tipo_bd, p_at, p_tot))
+                INSERT INTO despesas_fixas (descricao, valor, tipo, parcela_atual, total_parcelas, forma_pagamento, cartao_banco)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (f_nome, f_val, tipo_bd, int(p_at), int(p_tot), f_forma_pag, f_cartao_banco_final.strip()))
             conn.commit()
-            st.success("Despesa fixa cadastrada com sucesso!")
+            st.success("Conta fixa cadastrada com sucesso!")
             st.rerun()
+
+    st.divider()
 
     st.subheader("Contas Fixas e Parcelas Cadastradas")
     if not df_fixos.empty:
@@ -521,8 +720,12 @@ elif menu == "📌 Gastos Fixos & Parcelas":
             lambda r: f"{int(r['parcela_atual'])} / {int(r['total_parcelas'])}" if r["tipo"] == "Parcela" else "Contínuo",
             axis=1
         )
-        tabela_fixos = df_mostrar_fixos[["descricao", "tipo", "valor", "Parcelas"]].copy()
-        tabela_fixos.columns = ["Descrição", "Tipo", "Valor Mensal", "Parcelas"]
+        df_mostrar_fixos["Pagamento"] = df_mostrar_fixos.apply(
+            lambda r: f"{r['forma_pagamento']} ({r['cartao_banco']})" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else r.get('forma_pagamento', '-'),
+            axis=1
+        )
+        tabela_fixos = df_mostrar_fixos[["descricao", "tipo", "valor", "Parcelas", "Pagamento"]].copy()
+        tabela_fixos.columns = ["Descrição", "Tipo", "Valor Mensal", "Parcelas", "Forma de Pagamento"]
 
         st.dataframe(
             tabela_fixos.style.format({"Valor Mensal": "R$ {:,.2f}"}),
@@ -530,12 +733,13 @@ elif menu == "📌 Gastos Fixos & Parcelas":
             hide_index=True
         )
 
-        st.markdown("#### 🗑️️ Cancelar / Excluir Despesa Lançada Errada")
+        st.markdown("#### 🗑 Cancelar / Excluir Despesa Lançada Errada")
         st.caption("Selecione um item que você lançou por engano ou que deseja encerrar:")
 
         opcoes_fixos_excluir = {
             f"{r['descricao']} ({r['tipo']}) — R$ {r['valor']:,.2f}" +
             (f" [{int(r['parcela_atual'])}/{int(r['total_parcelas'])}]" if r['tipo'] == 'Parcela' else "") +
+            (f" [{r['cartao_banco']}]" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else "") +
             f" (Cód #{r['id']})": int(r['id'])
             for _, r in df_fixos.iterrows()
         }
