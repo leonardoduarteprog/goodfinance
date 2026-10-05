@@ -13,6 +13,55 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# --- ESTILIZAÇÃO CSS (Dark & Banners de Alerta) ---
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #0b0d13;
+        color: #f1f5f9;
+        font-family: 'Segoe UI', Tahoma, sans-serif;
+    }
+    .metric-card {
+        background: linear-gradient(145deg, #161922, #11131a);
+        border: 1px solid #232734;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
+    }
+    .metric-label {
+        color: #94a3b8;
+        font-size: 11px;
+        text-transform: uppercase;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+    .metric-num {
+        color: #ffffff;
+        font-size: 22px;
+        font-weight: bold;
+        margin-top: 4px;
+    }
+    .danger-box {
+        background: rgba(239, 68, 68, 0.15);
+        border-left: 4px solid #ef4444;
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: #fca5a5;
+        margin: 12px 0;
+        font-size: 14px;
+    }
+    .success-box {
+        background: rgba(16, 185, 129, 0.15);
+        border-left: 4px solid #10b981;
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: #6ee7b7;
+        margin: 12px 0;
+        font-size: 14px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # --- BANCO DE DADOS (SQLite) ---
 conn = sqlite3.connect("orcamento.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -58,7 +107,7 @@ CREATE TABLE IF NOT EXISTS gastos_diarios (
 """)
 conn.commit()
 
-# --- BARRA LATERAL (FILTROS E NAVEGAÇÃO) ---
+# --- BARRA LATERAL (NAVEGAÇÃO) ---
 st.sidebar.title("🎯 Menu")
 
 ano_atual = st.sidebar.selectbox("Ano", [2025, 2026, 2027], index=1)
@@ -103,9 +152,16 @@ total_gasto_real = df_gastos["valor"].sum() if not df_gastos.empty else 0.0
 saldo_restante_caixa = saldo_livre_mes - total_gasto_real
 
 # =========================================================
-# PROCESSAMENTO DOS DIAS (DO DIA 1 AO ÚLTIMO DIA DO MÊS)
+# LÓGICA DE SIMULAÇÃO DIA A DIA (DO DIA 1 AO FIM DO MÊS)
 # =========================================================
-dias_dados = []
+dias_lista = []
+teto_lista = []
+gasto_lista = []
+cores_status = []
+cores_grafico = []
+
+dia_negativo = None
+saldo_acum_check = saldo_livre_mes
 
 if modo_ajuste == "rebalancear":
     # MODO 1: REBALANCEAMENTO DINÂMICO
@@ -115,35 +171,37 @@ if modo_ajuste == "rebalancear":
         teto_dia = max(0.0, saldo_remanescente / dias_a_frente) if dias_a_frente > 0 else 0.0
         gasto_dia = gastos_por_dia.get(d, 0.0)
 
+        # Checagem de quando o saldo zerou/estourou
+        saldo_acum_check -= gasto_dia
+        if saldo_acum_check < 0 and dia_negativo is None:
+            dia_negativo = d
+
         if gasto_dia > 0:
             if gasto_dia > teto_dia:
-                status = "🔴 Estourou o teto"
-                cor_hex = "#ef4444"
+                cor = "vermelho"
+                hex_c = "#ef4444"
             elif gasto_dia >= (teto_dia * 0.8):
-                status = "🟡 Alerta (Quase no teto)"
-                cor_hex = "#f59e0b"
+                cor = "amarelo"
+                hex_c = "#f59e0b"
             else:
-                status = "🟢 Dentro do teto"
-                cor_hex = "#10b981"
+                cor = "verde"
+                hex_c = "#10b981"
         else:
             if saldo_remanescente <= 0:
-                status = "🔴 Sem saldo disponível"
-                cor_hex = "#ef4444"
+                cor = "vermelho"
+                hex_c = "#ef4444"
             else:
-                status = "⚪ Planejado"
-                cor_hex = "#64748b"
+                cor = "neutro"
+                hex_c = "#64748b"
 
         saldo_remanescente -= gasto_dia
 
-        dias_dados.append({
-            "Dia": f"Dia {d:02d}",
-            "dia_num": d,
-            "Teto Permitido (R$)": teto_dia,
-            "Gasto Real (R$)": gasto_dia,
-            "Saldo em Caixa (R$)": saldo_remanescente,
-            "Status": status,
-            "cor_hex": cor_hex
-        })
+        dias_lista.append(f"Dia {d:02d}")
+        teto_lista.append(teto_dia)
+        gasto_lista.append(gasto_dia)
+        cores_status.append(cor)
+        cores_grafico.append(hex_c)
+
 else:
     # MODO 2: ABATER DO FIM DO MÊS
     teto_base_fixo = saldo_livre_mes / dias_no_mes if dias_no_mes > 0 else 0.0
@@ -152,37 +210,43 @@ else:
     for d in range(1, dias_no_mes + 1):
         gasto_dia = gastos_por_dia.get(d, 0.0)
         teto_dia = teto_base_fixo if saldo_acumulado >= teto_base_fixo else max(0.0, saldo_acumulado)
+
+        saldo_acum_check -= gasto_dia
+        if saldo_acum_check < 0 and dia_negativo is None:
+            dia_negativo = d
+
         saldo_acumulado -= gasto_dia
 
         if gasto_dia > 0:
             if gasto_dia > teto_base_fixo:
-                status = "🔴 Estourou o teto"
-                cor_hex = "#ef4444"
+                cor = "vermelho"
+                hex_c = "#ef4444"
             elif gasto_dia >= (teto_base_fixo * 0.8):
-                status = "🟡 Alerta (Quase no teto)"
-                cor_hex = "#f59e0b"
+                cor = "amarelo"
+                hex_c = "#f59e0b"
             else:
-                status = "🟢 Dentro do teto"
-                cor_hex = "#10b981"
+                cor = "verde"
+                hex_c = "#10b981"
         else:
             if teto_dia <= 0.0:
-                status = "🔴 Zerado (Cortado do mês)"
-                cor_hex = "#ef4444"
+                cor = "vermelho"
+                hex_c = "#ef4444"
             else:
-                status = "⚪ Planejado"
-                cor_hex = "#64748b"
+                cor = "neutro"
+                hex_c = "#64748b"
 
-        dias_dados.append({
-            "Dia": f"Dia {d:02d}",
-            "dia_num": d,
-            "Teto Permitido (R$)": teto_dia,
-            "Gasto Real (R$)": gasto_dia,
-            "Saldo em Caixa (R$)": saldo_acumulado,
-            "Status": status,
-            "cor_hex": cor_hex
-        })
+        dias_lista.append(f"Dia {d:02d}")
+        teto_lista.append(teto_dia)
+        gasto_lista.append(gasto_dia)
+        cores_status.append(cor)
+        cores_grafico.append(hex_c)
 
-df_calendario = pd.DataFrame(dias_dados)
+# Montagem do DataFrame limpo com apenas as 3 colunas pedidas
+df_exibicao = pd.DataFrame({
+    "Dia": dias_lista,
+    "Teto Permitido (R$)": teto_lista,
+    "Gasto Real (R$)": gasto_lista
+})
 
 # =========================================================
 # TELA 1: CALENDÁRIO ORÇAMENTÁRIO & GRÁFICO
@@ -192,38 +256,75 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     # Cards principais
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Orçamento Livre do Mês", f"R$ {saldo_livre_mes:,.2f}")
-    col2.metric("Total Gasto Até Agora", f"R$ {total_gasto_real:,.2f}")
-    col3.metric("Saldo Restante em Caixa", f"R$ {saldo_restante_caixa:,.2f}", delta=f"{saldo_restante_caixa:,.2f}")
-    regra_nome = "Rebalanceamento" if modo_ajuste == "rebalancear" else "Corte no Fim"
-    col4.metric("Regra de Ajuste", regra_nome)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #3b82f6;">
+            <div class="metric-label">Orçamento Livre Inicial</div>
+            <div class="metric-num">R$ {saldo_livre_mes:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #f43f5e;">
+            <div class="metric-label">Total Gasto Até Agora</div>
+            <div class="metric-num">R$ {total_gasto_real:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        cor_cx = "#10b981" if saldo_restante_caixa >= 0 else "#ef4444"
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid {cor_cx};">
+            <div class="metric-label">Saldo Disponível em Caixa</div>
+            <div class="metric-num">R$ {saldo_restante_caixa:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        regra_nome = "Rebalanceamento" if modo_ajuste == "rebalancear" else "Corte no Fim"
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
+            <div class="metric-label">Regra de Ajuste</div>
+            <div class="metric-num" style="font-size: 16px; margin-top: 8px;">{regra_nome}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.divider()
+    # LINHA DE AVISO/DESTAQUE DO GASTO PREVISTO
+    if dia_negativo:
+        st.markdown(f"""
+        <div class="danger-box">
+            🚨 <b>Atenção:</b> Seu saldo livre ficou negativo no <b>Dia {dia_negativo:02d}</b>! 
+            Você já gastou mais do que o planejado para o mês. Saldo restante atual: <b>R$ {saldo_restante_caixa:,.2f}</b>.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="success-box">
+            ✅ <b>Dentro do planejado:</b> Você ainda possui <b>R$ {saldo_restante_caixa:,.2f}</b> livres para gastar até o final de {mes_selecionado}.
+        </div>
+        """, unsafe_allow_html=True)
 
     # GRÁFICO DIÁRIO
     st.subheader("Desempenho por Dia: Teto Permitido vs. Gasto Real")
 
+    dias_numeros = list(range(1, dias_no_mes + 1))
     fig = go.Figure()
-    # Linha do teto diário
     fig.add_trace(go.Scatter(
-        x=df_calendario["dia_num"],
-        y=df_calendario["Teto Permitido (R$)"],
+        x=dias_numeros,
+        y=teto_lista,
         mode="lines+markers",
         name="Teto Permitido (R$)",
         line=dict(color="#38bdf8", width=2, dash="dot"),
         marker=dict(size=5)
     ))
-    # Barras coloridas por status
     fig.add_trace(go.Bar(
-        x=df_calendario["dia_num"],
-        y=df_calendario["Gasto Real (R$)"],
+        x=dias_numeros,
+        y=gasto_lista,
         name="Gasto Registrado (R$)",
-        marker_color=df_calendario["cor_hex"]
+        marker_color=cores_grafico
     ))
 
     fig.update_layout(
         template="plotly_dark",
-        height=360,
+        height=340,
         margin=dict(l=10, r=10, t=30, b=10),
         xaxis=dict(title="Dia do Mês", tickmode="linear", tick0=1, dtick=1),
         yaxis=dict(title="Reais (R$)"),
@@ -231,18 +332,25 @@ if menu == "📊 Calendário e Gráfico Diário":
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.divider()
+    st.write("")
 
-    # TABELA NATIVA ROBUSTA
+    # TABELA COM FUNDO COLORIDO INTEGRAL NAS 3 COLUNAS
     st.subheader("Tabela do Dia 1 ao Fim do Mês")
 
-    tabela_visual = df_calendario[["Dia", "Teto Permitido (R$)", "Gasto Real (R$)", "Saldo em Caixa (R$)", "Status"]].copy()
+    def colorir_linhas(row):
+        c = cores_status[row.name]
+        if c == "vermelho":
+            return ["background-color: rgba(239, 68, 68, 0.35); color: #ffffff; font-weight: 500;"] * len(row)
+        elif c == "amarelo":
+            return ["background-color: rgba(245, 158, 11, 0.35); color: #ffffff; font-weight: 500;"] * len(row)
+        elif c == "verde":
+            return ["background-color: rgba(16, 185, 129, 0.35); color: #ffffff; font-weight: 500;"] * len(row)
+        return [""] * len(row)
 
     st.dataframe(
-        tabela_visual.style.format({
+        df_exibicao.style.apply(colorir_linhas, axis=1).format({
             "Teto Permitido (R$)": "R$ {:,.2f}",
-            "Gasto Real (R$)": "R$ {:,.2f}",
-            "Saldo em Caixa (R$)": "R$ {:,.2f}"
+            "Gasto Real (R$)": "R$ {:,.2f}"
         }),
         use_container_width=True,
         hide_index=True
@@ -253,7 +361,7 @@ if menu == "📊 Calendário e Gráfico Diário":
 # =========================================================
 elif menu == "⚙️ Configurar Renda e Regras":
     st.title("Configurar Renda, Poupança e Regras")
-    st.write("Defina os valores mensais e como o aplicativo deve recalcular suas despesas.")
+    st.write("Defina seus valores e selecione como o aplicativo deve recalcular suas despesas.")
 
     with st.form("form_config"):
         nova_renda = st.number_input("Renda Mensal Total (R$)", min_value=0.0, value=float(renda_mensal), step=100.0)
