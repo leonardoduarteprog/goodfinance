@@ -194,6 +194,7 @@ saldo_restante_caixa = saldo_livre_mes - total_gasto_real
 # LÓGICA DE SIMULAÇÃO DIA A DIA
 # =========================================================
 dias_lista = []
+dias_numeros = []
 teto_lista = []
 gasto_lista = []
 cores_status = []
@@ -229,11 +230,12 @@ if modo_ajuste == "rebalancear":
                 hex_c = "#ef4444"
             else:
                 cor = "neutro"
-                hex_c = "#64748b"
+                hex_c = "rgba(100, 116, 139, 0.25)"
 
         saldo_remanescente -= gasto_dia
 
         dias_lista.append(f"Dia {d:02d}")
+        dias_numeros.append(d)
         teto_lista.append(teto_dia)
         gasto_lista.append(gasto_dia)
         cores_status.append(cor)
@@ -269,9 +271,10 @@ else:
                 hex_c = "#ef4444"
             else:
                 cor = "neutro"
-                hex_c = "#64748b"
+                hex_c = "rgba(100, 116, 139, 0.25)"
 
         dias_lista.append(f"Dia {d:02d}")
+        dias_numeros.append(d)
         teto_lista.append(teto_dia)
         gasto_lista.append(gasto_dia)
         cores_status.append(cor)
@@ -281,6 +284,15 @@ df_exibicao = pd.DataFrame({
     "Dia": dias_lista,
     "Teto Permitido (R$)": teto_lista,
     "Gasto Real (R$)": gasto_lista
+})
+
+# DataFrame para apoio do gráfico comparativo
+df_dados_grafico = pd.DataFrame({
+    "dia_num": dias_numeros,
+    "dia_label": [f"D{d:02d}" for d in dias_numeros],
+    "teto": teto_lista,
+    "gasto": gasto_lista,
+    "cor": cores_grafico
 })
 
 # =========================================================
@@ -335,33 +347,68 @@ if menu == "📊 Calendário e Gráfico Diário":
         </div>
         """, unsafe_allow_html=True)
 
-    # GRÁFICO DIÁRIO PRINCIPAL
-    st.subheader("Desempenho por Dia: Teto Permitido vs. Gasto Real")
+    # --- NOVO GRÁFICO DIÁRIO COMPARATIVO EM BARRAS ---
+    st.subheader("📊 Comparativo Diário: Teto Permitido vs. Gasto Real")
 
-    dias_numeros = list(range(1, dias_no_mes + 1))
+    # Controles de visualização para celular/desktop
+    visao_grafico = st.radio(
+        "Filtrar período no gráfico:",
+        ["📅 Mês Completo", "🔍 Apenas Dias com Gastos", "📆 1ª Quinzena (1 a 15)", "📆 2ª Quinzena (16 ao Fim)"],
+        horizontal=True
+    )
+
+    if visao_grafico == "🔍 Apenas Dias com Gastos":
+        df_plot = df_dados_grafico[df_dados_grafico["gasto"] > 0].copy()
+        if df_plot.empty:
+            df_plot = df_dados_grafico.head(7).copy()
+            st.info("Nenhum gasto registrado ainda. Exibindo os primeiros 7 dias para visualização.")
+    elif visao_grafico == "📆 1ª Quinzena (1 a 15)":
+        df_plot = df_dados_grafico[df_dados_grafico["dia_num"] <= 15].copy()
+    elif visao_grafico == "📆 2ª Quinzena (16 ao Fim)":
+        df_plot = df_dados_grafico[df_dados_grafico["dia_num"] >= 16].copy()
+    else:
+        df_plot = df_dados_grafico.copy()
+
+    # Rótulos de texto que aparecem dentro/sobre as barras
+    textos_teto = [f"R$ {t:,.0f}" if t > 0 else "" for t in df_plot["teto"]]
+    textos_gasto = [f"R$ {g:,.0f}" if g > 0 else "" for g in df_plot["gasto"]]
+
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dias_numeros,
-        y=teto_lista,
-        mode="lines+markers",
-        name="Teto Permitido (R$)",
-        line=dict(color="#38bdf8", width=2, dash="dot"),
-        marker=dict(size=5)
-    ))
+
+    # Barra 1: Teto Permitido (Azul Céu)
     fig.add_trace(go.Bar(
-        x=dias_numeros,
-        y=gasto_lista,
-        name="Gasto Registrado (R$)",
-        marker_color=cores_grafico
+        x=df_plot["dia_label"],
+        y=df_plot["teto"],
+        name="Teto Permitido (R$)",
+        marker_color="rgba(56, 189, 248, 0.45)",
+        marker_line_color="#38bdf8",
+        marker_line_width=1.5,
+        text=textos_teto,
+        textposition="auto",
+        hovertemplate="<b>%{x}</b><br>Teto Permitido: R$ %{y:,.2f}<extra></extra>"
+    ))
+
+    # Barra 2: Gasto Real (Semáforo Colorido)
+    fig.add_trace(go.Bar(
+        x=df_plot["dia_label"],
+        y=df_plot["gasto"],
+        name="Gasto Real (R$)",
+        marker_color=df_plot["cor"],
+        text=textos_gasto,
+        textposition="auto",
+        hovertemplate="<b>%{x}</b><br>Gasto Real: R$ %{y:,.2f}<extra></extra>"
     ))
 
     fig.update_layout(
+        barmode="group",
         template="plotly_dark",
-        height=340,
+        height=380,
         margin=dict(l=10, r=10, t=30, b=10),
-        xaxis=dict(title="Dia do Mês", tickmode="linear", tick0=1, dtick=1),
-        yaxis=dict(title="Reais (R$)"),
-        legend=dict(orientation="h", y=1.1, x=0)
+        xaxis=dict(title="", tickangle=0),
+        yaxis=dict(title="Reais (R$)", gridcolor="#1e2230"),
+        legend=dict(orientation="h", y=1.12, x=0),
+        bargap=0.25,
+        bargroupgap=0.08
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -392,7 +439,6 @@ if menu == "📊 Calendário e Gráfico Diário":
     # --- SEÇÃO DE CARTÕES DE CRÉDITO E DÉBITO ---
     st.subheader("💳 Raio-X dos Gastos nos Cartões")
 
-    # Filtra despesas com cartões no mês
     df_cartoes = df_gastos[df_gastos["forma_pagamento"].str.contains("Cartão", na=False)].copy()
 
     if not df_cartoes.empty:
@@ -404,7 +450,6 @@ if menu == "📊 Calendário e Gráfico Diário":
         dias_com_cartao = df_cartoes["dia"].nunique()
         media_dia_uso = (total_cartoes / dias_com_cartao) if dias_com_cartao > 0 else 0.0
 
-        # Resumo rápido em cards
         c_c1, c_c2, c_c3 = st.columns(3)
         with c_c1:
             st.markdown(f"""
@@ -431,7 +476,6 @@ if menu == "📊 Calendário e Gráfico Diário":
 
         col_g1, col_g2 = st.columns(2)
 
-        # Gráfico 1: Total Gasto por Cartão
         with col_g1:
             tot_por_cartao = df_cartoes.groupby("cartao_banco")["valor"].sum().reset_index()
             tot_por_cartao = tot_por_cartao.sort_values(by="valor", ascending=False)
@@ -456,7 +500,6 @@ if menu == "📊 Calendário e Gráfico Diário":
             fig_bar_cartao.update_traces(textposition="outside")
             st.plotly_chart(fig_bar_cartao, use_container_width=True)
 
-        # Gráfico 2: Gastos por Dia nos Cartões
         with col_g2:
             dia_cartao = df_cartoes.groupby("dia")["valor"].sum().reset_index()
 
@@ -569,7 +612,6 @@ elif menu == "💸 Lançar Gasto Diário":
             key="gasto_forma_pag_input"
         )
 
-    # Campo condicional para Cartão
     cartao_banco_final = ""
     if "Cartão" in forma_pag:
         st.markdown("##### 💳 Qual cartão/banco foi utilizado?")
