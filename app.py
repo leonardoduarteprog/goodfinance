@@ -171,7 +171,6 @@ if modo_ajuste == "rebalancear":
         teto_dia = max(0.0, saldo_remanescente / dias_a_frente) if dias_a_frente > 0 else 0.0
         gasto_dia = gastos_por_dia.get(d, 0.0)
 
-        # Checagem de quando o saldo zerou/estourou
         saldo_acum_check -= gasto_dia
         if saldo_acum_check < 0 and dia_negativo is None:
             dia_negativo = d
@@ -241,7 +240,7 @@ else:
         cores_status.append(cor)
         cores_grafico.append(hex_c)
 
-# Montagem do DataFrame limpo com apenas as 3 colunas pedidas
+# Tabela com as 3 colunas
 df_exibicao = pd.DataFrame({
     "Dia": dias_lista,
     "Teto Permitido (R$)": teto_lista,
@@ -287,7 +286,7 @@ if menu == "📊 Calendário e Gráfico Diário":
         </div>
         """, unsafe_allow_html=True)
 
-    # LINHA DE AVISO/DESTAQUE DO GASTO PREVISTO
+    # Linha de alerta/status
     if dia_negativo:
         st.markdown(f"""
         <div class="danger-box">
@@ -392,27 +391,56 @@ elif menu == "⚙️ Configurar Renda e Regras":
             st.rerun()
 
 # =========================================================
-# TELA 3: LANÇAMENTO DE GASTOS DIÁRIOS
+# TELA 3: LANÇAMENTO DE GASTOS DIÁRIOS (ATUALIZADA)
 # =========================================================
 elif menu == "💸 Lançar Gasto Diário":
     st.title("Registrar Gasto Diário")
 
     with st.form("form_lancar", clear_on_submit=True):
-        dia_sel = st.slider("Dia do gasto", 1, dias_no_mes, value=min(date.today().day, dias_no_mes))
-        desc = st.text_input("Descrição do gasto (ex: Almoço, Supermercado, Combustível)")
-        cat = st.selectbox("Categoria", ["Alimentação", "Transporte", "Lazer", "Saúde", "Supermercado", "Outros"])
+        # 1. Digitar o dia diretamente
+        dia_sel = st.number_input(
+            "Dia do Mês",
+            min_value=1,
+            max_value=dias_no_mes,
+            value=min(date.today().day, dias_no_mes),
+            step=1
+        )
+
+        # 2. Categoria acima da descrição com emojis
+        lista_categorias = [
+            "🍔 Alimentação",
+            "🚗 Transporte",
+            "🛒 Supermercado",
+            "🍿 Lazer",
+            "💊 Saúde",
+            "🏠 Moradia / Contas",
+            "✏️ Outra / Personalizar"
+        ]
+        cat_sel = st.selectbox("Categoria", lista_categorias)
+        
+        # Campo aberto para quando quiser personalizar a categoria
+        cat_custom = st.text_input("Se selecionou '✏️ Outra / Personalizar', digite o nome da categoria aqui:")
+
+        # 3. Descrição abaixo da categoria
+        desc = st.text_input("Descrição do Gasto (ex: Almoço no shopping, Combustível, Farmácia)")
+        
+        # 4. Valor da despesa
         val = st.number_input("Valor da Despesa (R$)", min_value=0.5, step=5.0)
 
         if st.form_submit_button("Confirmar Despesa"):
+            categoria_final = cat_custom.strip() if ("Personalizar" in cat_sel and cat_custom.strip()) else cat_sel
+            
             if desc.strip() == "":
                 st.warning("Preencha a descrição do gasto.")
+            elif "Personalizar" in cat_sel and cat_custom.strip() == "":
+                st.warning("Você selecionou personalizar categoria. Por favor, digite o nome dela no campo correspondente.")
             else:
                 cursor.execute("""
                     INSERT INTO gastos_diarios (ano, mes, dia, descricao, categoria, valor)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (ano_atual, mes_num, dia_sel, desc, cat, val))
+                """, (ano_atual, mes_num, int(dia_sel), desc, categoria_final, val))
                 conn.commit()
-                st.success(f"Despesa de R$ {val:,.2f} no Dia {dia_sel} registrada!")
+                st.success(f"Despesa de R$ {val:,.2f} no Dia {int(dia_sel):02d} registrada na categoria '{categoria_final}'!")
                 st.rerun()
 
     st.subheader("Histórico de Gastos Deste Mês")
