@@ -66,6 +66,7 @@ st.markdown("""
 conn = sqlite3.connect("orcamento.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Metas mensais
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS metas_mensais (
     ano INTEGER,
@@ -83,6 +84,7 @@ try:
 except sqlite3.OperationalError:
     pass
 
+# Gastos fixos e parcelas
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS despesas_fixas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +96,7 @@ CREATE TABLE IF NOT EXISTS despesas_fixas (
 )
 """)
 
+# Gastos diários
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS gastos_diarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +106,27 @@ CREATE TABLE IF NOT EXISTS gastos_diarios (
     descricao TEXT,
     categoria TEXT,
     valor REAL
+)
+""")
+
+# Patrimônio base
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS patrimonio_base (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    saldo_inicial REAL DEFAULT 0.0
+)
+""")
+cursor.execute("INSERT OR IGNORE INTO patrimonio_base (id, saldo_inicial) VALUES (1, 0.0)")
+
+# Aportes consolidados por mês
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS aportes_consolidados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ano INTEGER,
+    mes INTEGER,
+    valor REAL,
+    data_consolidacao TEXT,
+    UNIQUE(ano, mes)
 )
 """)
 conn.commit()
@@ -120,13 +144,15 @@ mes_selecionado = st.sidebar.selectbox("Mês", meses_nomes, index=mes_atual_idx)
 mes_num = meses_nomes.index(mes_selecionado) + 1
 dias_no_mes = calendar.monthrange(ano_atual, mes_num)[1]
 
+# Inclusão da nova aba "Patrimônio"
 menu = st.sidebar.radio(
     "Ir para:",
     [
         "📊 Calendário e Gráfico Diário",
         "⚙️ Configurar Renda e Regras",
         "💸 Lançar Gasto Diário",
-        "📌 Gastos Fixos & Parcelas"
+        "📌 Gastos Fixos & Parcelas",
+        "💰 Patrimônio"
     ]
 )
 
@@ -142,7 +168,7 @@ total_fixos = df_fixos["valor"].sum() if not df_fixos.empty else 0.0
 
 saldo_livre_mes = max(0.0, renda_mensal - meta_poupanca - total_fixos)
 
-# Consulta de gastos lançados no mês trazendo o ID
+# Consulta de gastos lançados no mês
 df_gastos = pd.read_sql_query(
     "SELECT id, dia, descricao, categoria, valor FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC, id ASC",
     conn, params=(ano_atual, mes_num)
@@ -240,7 +266,6 @@ else:
         cores_status.append(cor)
         cores_grafico.append(hex_c)
 
-# Tabela com as 3 colunas
 df_exibicao = pd.DataFrame({
     "Dia": dias_lista,
     "Teto Permitido (R$)": teto_lista,
@@ -253,7 +278,6 @@ df_exibicao = pd.DataFrame({
 if menu == "📊 Calendário e Gráfico Diário":
     st.title(f"Acompanhamento — {mes_selecionado} de {ano_atual}")
 
-    # Cards principais
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"""
@@ -286,7 +310,6 @@ if menu == "📊 Calendário e Gráfico Diário":
         </div>
         """, unsafe_allow_html=True)
 
-    # Linha de alerta/status
     if dia_negativo:
         st.markdown(f"""
         <div class="danger-box">
@@ -301,7 +324,6 @@ if menu == "📊 Calendário e Gráfico Diário":
         </div>
         """, unsafe_allow_html=True)
 
-    # GRÁFICO DIÁRIO
     st.subheader("Desempenho por Dia: Teto Permitido vs. Gasto Real")
 
     dias_numeros = list(range(1, dias_no_mes + 1))
@@ -332,8 +354,6 @@ if menu == "📊 Calendário e Gráfico Diário":
     st.plotly_chart(fig, use_container_width=True)
 
     st.write("")
-
-    # TABELA COM FUNDO COLORIDO INTEGRAL NAS 3 COLUNAS
     st.subheader("Tabela do Dia 1 ao Fim do Mês")
 
     def colorir_linhas(row):
@@ -438,7 +458,6 @@ elif menu == "💸 Lançar Gasto Diário":
 
     st.subheader("Histórico de Gastos Deste Mês")
     if not df_gastos.empty:
-        # Exibe a tabela sem expor o ID numérico
         df_exibir = df_gastos[["dia", "descricao", "categoria", "valor"]].copy()
         df_exibir.columns = ["Dia", "Descrição", "Categoria", "Valor"]
         st.dataframe(
@@ -447,11 +466,9 @@ elif menu == "💸 Lançar Gasto Diário":
             hide_index=True
         )
 
-        # ÁREA DE EXCLUSÃO DE GASTOS
         st.markdown("#### 🗑️ Excluir Gasto Indevido")
         st.caption("Selecione um lançamento cadastrado por engano para removê-lo da sua base:")
 
-        # Dicionário mapeando a opção legível ao ID interno
         opcoes_para_excluir = {
             f"Dia {int(r['dia']):02d} | {r['descricao']} ({r['categoria']}) — R$ {r['valor']:,.2f} (Cód #{r['id']})": int(r['id'])
             for _, r in df_gastos.iterrows()
@@ -519,3 +536,172 @@ elif menu == "📌 Gastos Fixos & Parcelas":
             st.rerun()
     else:
         st.info("Nenhuma despesa fixa cadastrada.")
+
+# =========================================================
+# TELA 5: PATRIMÔNIO & PROJEÇÃO
+# =========================================================
+elif menu == "💰 Patrimônio":
+    st.title("Gestão de Patrimônio e Projeção de Reserva")
+
+    # Recupera patrimônio base inicial
+    cursor.execute("SELECT saldo_inicial FROM patrimonio_base WHERE id = 1")
+    row_base = cursor.fetchone()
+    patrimonio_inicial = row_base[0] if row_base else 0.0
+
+    # Recupera todos os aportes consolidados
+    df_aportes = pd.read_sql_query("SELECT ano, mes, valor, data_consolidacao FROM aportes_consolidados", conn)
+    total_aportado_historico = df_aportes["valor"].sum() if not df_aportes.empty else 0.0
+    patrimonio_atual_total = patrimonio_inicial + total_aportado_historico
+
+    # Recupera status do mês selecionado
+    cursor.execute("SELECT valor FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
+    row_aporte_mes = cursor.fetchone()
+    aporte_consolidado_mes = row_aporte_mes[0] if row_aporte_mes else None
+
+    # CARDS PRINCIPAIS DE PATRIMÔNIO
+    c_p1, c_p2, c_p3 = st.columns(3)
+    with c_p1:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #10b981;">
+            <div class="metric-label">Patrimônio Atual Consolidado</div>
+            <div class="metric-num">R$ {patrimonio_atual_total:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_p2:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #3b82f6;">
+            <div class="metric-label">Patrimônio Inicial Declarado</div>
+            <div class="metric-num">R$ {patrimonio_inicial:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_p3:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
+            <div class="metric-label">Total Poupado & Consolidado</div>
+            <div class="metric-num">R$ {total_aportado_historico:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # BLOCO 1: DEFINIR PATRIMÔNIO INICIAL
+    st.subheader("1. Definir Patrimônio Inicial")
+    st.caption("Informe quanto você já tem guardado/investido hoje (deixe 0 se estiver começando do zero):")
+
+    with st.form("form_patrimonio_base"):
+        novo_inicial = st.number_input(
+            "Patrimônio Inicial (R$)",
+            min_value=0.0,
+            value=float(patrimonio_inicial),
+            step=100.0
+        )
+        if st.form_submit_button("Atualizar Patrimônio Inicial"):
+            cursor.execute("UPDATE patrimonio_base SET saldo_inicial = ? WHERE id = 1", (novo_inicial,))
+            conn.commit()
+            st.success("Patrimônio inicial atualizado com sucesso!")
+            st.rerun()
+
+    st.divider()
+
+    # BLOCO 2: CONSOLIDAR O MÊS ATUAL
+    st.subheader(f"2. Fechamento de {mes_selecionado}/{ano_atual}")
+    st.caption("Ao finalizar o mês, transfira o que você realmente conseguiu poupar para somar ao seu patrimônio:")
+
+    if aporte_consolidado_mes is not None:
+        st.info(f"✅ O mês de **{mes_selecionado}/{ano_atual}** já foi consolidado com um aporte de **R$ {aporte_consolidado_mes:,.2f}** no patrimônio.")
+        if st.button("Desfazer / Remover Consolidação deste Mês"):
+            cursor.execute("DELETE FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
+            conn.commit()
+            st.success("Consolidação removida.")
+            st.rerun()
+    else:
+        with st.form("form_consolidar_mes"):
+            sugestao_poupanca = float(meta_poupanca)
+            valor_consolidar = st.number_input(
+                f"Valor poupado em {mes_selecionado}/{ano_atual} a adicionar ao patrimônio (R$)",
+                min_value=0.0,
+                value=sugestao_poupanca,
+                step=50.0
+            )
+            if st.form_submit_button("Confirmar e Somar ao Patrimônio"):
+                data_hoje_str = str(date.today())
+                cursor.execute("""
+                    INSERT INTO aportes_consolidados (ano, mes, valor, data_consolidacao)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(ano, mes) DO UPDATE SET valor = excluded.valor, data_consolidacao = excluded.data_consolidacao
+                """, (ano_atual, mes_num, valor_consolidar, data_hoje_str))
+                conn.commit()
+                st.success(f"Excelente! R$ {valor_consolidar:,.2f} adicionados ao seu patrimônio!")
+                st.rerun()
+
+    st.divider()
+
+    # BLOCO 3: TABELA E GRÁFICO DE PROJEÇÃO ATÉ O FINAL DO ANO
+    st.subheader(f"3. Projeção Patrimonial — Ano de {ano_atual}")
+    st.caption(f"Previsão mês a mês somando o patrimônio inicial com aportes realizados e projetados (Meta base: R$ {meta_poupanca:,.2f}/mês):")
+
+    # Mapeamento de aportes consolidados deste ano
+    aportes_ano_map = {}
+    if not df_aportes.empty:
+        df_ano_atual = df_aportes[df_aportes["ano"] == ano_atual]
+        aportes_ano_map = dict(zip(df_ano_atual["mes"], df_ano_atual["valor"]))
+
+    acumulado_proj = patrimonio_inicial
+    dados_proj = []
+
+    for m_i, m_n in enumerate(meses_nomes, start=1):
+        if m_i in aportes_ano_map:
+            val_aporte = aportes_ano_map[m_i]
+            tipo_status = "✅ Consolidado"
+        else:
+            val_aporte = meta_poupanca
+            tipo_status = "🔮 Projetado"
+
+        acumulado_proj += val_aporte
+        dados_proj.append({
+            "Mês": m_n,
+            "m_num": m_i,
+            "Situação": tipo_status,
+            "Poupança / Aporte (R$)": val_aporte,
+            "Patrimônio Acumulado (R$)": acumulado_proj
+        })
+
+    df_proj_tabela = pd.DataFrame(dados_proj)
+
+    # GRÁFICO DE CRESCIMENTO DO PATRIMÔNIO
+    fig_proj = go.Figure()
+    fig_proj.add_trace(go.Scatter(
+        x=df_proj_tabela["Mês"],
+        y=df_proj_tabela["Patrimônio Acumulado (R$)"],
+        mode="lines+markers",
+        name="Patrimônio Total",
+        line=dict(color="#10b981", width=3),
+        marker=dict(size=7, color="#38bdf8")
+    ))
+
+    fig_proj.update_layout(
+        template="plotly_dark",
+        height=320,
+        margin=dict(l=10, r=10, t=20, b=10),
+        xaxis=dict(title="Mês"),
+        yaxis=dict(title="Patrimônio Acumulado (R$)")
+    )
+    st.plotly_chart(fig_proj, use_container_width=True)
+
+    # TABELA FORMATADA DE PROJEÇÃO
+    st.dataframe(
+        df_proj_tabela[["Mês", "Situação", "Poupança / Aporte (R$)", "Patrimônio Acumulado (R$)"]].style.format({
+            "Poupança / Aporte (R$)": "R$ {:,.2f}",
+            "Patrimônio Acumulado (R$)": "R$ {:,.2f}"
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    patrimonio_fim_ano = df_proj_tabela.iloc[-1]["Patrimônio Acumulado (R$)"]
+    st.markdown(f"""
+    <div class="success-box">
+        🎯 <b>Projeção Final de {ano_atual}:</b> Mantendo sua meta de poupança, você fechará o ano com 
+        <b>R$ {patrimonio_fim_ano:,.2f}</b> acumulados!
+    </div>
+    """, unsafe_allow_html=True)
