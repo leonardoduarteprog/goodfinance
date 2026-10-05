@@ -60,6 +60,16 @@ st.markdown("""
         margin: 12px 0;
         font-size: 14px;
     }
+    .top-item-box {
+        background: #161922;
+        border: 1px solid #232734;
+        padding: 10px 14px;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -202,6 +212,8 @@ cores_grafico = []
 
 dia_negativo = None
 saldo_acum_check = saldo_livre_mes
+hoje_dia = date.today().day
+mes_eh_atual = (ano_atual == date.today().year and mes_num == date.today().month)
 
 if modo_ajuste == "rebalancear":
     saldo_remanescente = saldo_livre_mes
@@ -234,7 +246,8 @@ if modo_ajuste == "rebalancear":
 
         saldo_remanescente -= gasto_dia
 
-        dias_lista.append(f"Dia {d:02d}")
+        tag_hoje = " 📍 (Hoje)" if (mes_eh_atual and d == hoje_dia) else ""
+        dias_lista.append(f"Dia {d:02d}{tag_hoje}")
         dias_numeros.append(d)
         teto_lista.append(teto_dia)
         gasto_lista.append(gasto_dia)
@@ -273,7 +286,8 @@ else:
                 cor = "neutro"
                 hex_c = "rgba(100, 116, 139, 0.25)"
 
-        dias_lista.append(f"Dia {d:02d}")
+        tag_hoje = " 📍 (Hoje)" if (mes_eh_atual and d == hoje_dia) else ""
+        dias_lista.append(f"Dia {d:02d}{tag_hoje}")
         dias_numeros.append(d)
         teto_lista.append(teto_dia)
         gasto_lista.append(gasto_dia)
@@ -286,7 +300,6 @@ df_exibicao = pd.DataFrame({
     "Gasto Real (R$)": gasto_lista
 })
 
-# DataFrame para apoio do gráfico comparativo
 df_dados_grafico = pd.DataFrame({
     "dia_num": dias_numeros,
     "dia_label": [f"D{d:02d}" for d in dias_numeros],
@@ -301,6 +314,58 @@ df_dados_grafico = pd.DataFrame({
 if menu == "📊 Calendário e Gráfico Diário":
     st.title(f"Acompanhamento — {mes_selecionado} de {ano_atual}")
 
+    # 1. LANÇAMENTO RÁPIDO NA TELA INICIAL
+    with st.expander("⚡ Novo Lançamento Rápido (Sem trocar de aba)", expanded=False):
+        col_q1, col_q2, col_q3 = st.columns([1, 1.5, 1.5])
+        with col_q1:
+            q_dia = st.number_input("Dia", min_value=1, max_value=dias_no_mes, value=min(date.today().day, dias_no_mes), step=1, key="q_dia")
+        with col_q2:
+            q_cat = st.selectbox("Categoria", ["🍔 Alimentação", "🚗 Transporte", "🛒 Supermercado", "🍿 Lazer", "💊 Saúde", "🏠 Moradia / Contas", "✏️ Outra / Personalizar"], key="q_cat")
+        with col_q3:
+            q_forma = st.selectbox("Pagamento", ["PIX", "Cartão de Crédito", "Cartão de Débito", "Dinheiro"], key="q_forma")
+
+        q_cat_custom = ""
+        if "Personalizar" in q_cat:
+            q_cat_custom = st.text_input("Qual a categoria?", key="q_cat_custom")
+
+        q_cartao = ""
+        if "Cartão" in q_forma:
+            cursor.execute("SELECT DISTINCT cartao_banco FROM gastos_diarios WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+            usados_q = [r[0] for r in cursor.fetchall()]
+            bancos_base = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
+            opcoes_q = sorted(list(set(bancos_base + usados_q))) + ["✏️ Digitar outro banco / cartão..."]
+            sel_q_cart = st.selectbox("Cartão / Banco", opcoes_q, key="q_cartao_sel")
+            if "Digitar outro" in sel_q_cart:
+                q_cartao = st.text_input("Nome do cartão/banco:", key="q_cartao_input")
+            else:
+                q_cartao = sel_q_cart
+
+        col_qd, col_qv = st.columns([2, 1])
+        with col_qd:
+            q_desc = st.text_input("Descrição do gasto", placeholder="Ex: Café, Farmácia, Combustível", key="q_desc")
+        with col_qv:
+            q_val = st.number_input("Valor (R$)", min_value=0.5, step=5.0, key="q_val")
+
+        if st.button("Salvar Registro Rápido", type="primary", key="btn_salvar_rapido"):
+            cat_final = q_cat_custom.strip() if ("Personalizar" in q_cat and q_cat_custom.strip()) else q_cat
+            if q_desc.strip() == "":
+                st.warning("Preencha a descrição do gasto.")
+            elif "Personalizar" in q_cat and q_cat_custom.strip() == "":
+                st.warning("Informe o nome da categoria personalizada.")
+            elif "Cartão" in q_forma and q_cartao.strip() == "":
+                st.warning("Informe o cartão utilizado.")
+            else:
+                cursor.execute("""
+                    INSERT INTO gastos_diarios (ano, mes, dia, descricao, categoria, valor, forma_pagamento, cartao_banco)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ano_atual, mes_num, int(q_dia), q_desc.strip(), cat_final, q_val, q_forma, q_cartao.strip()))
+                conn.commit()
+                st.success(f"Despesa de R$ {q_val:,.2f} no Dia {int(q_dia):02d} registrada com sucesso!")
+                st.rerun()
+
+    st.write("")
+
+    # CARDS PRINCIPAIS
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"""
@@ -347,10 +412,9 @@ if menu == "📊 Calendário e Gráfico Diário":
         </div>
         """, unsafe_allow_html=True)
 
-    # --- NOVO GRÁFICO DIÁRIO COMPARATIVO EM BARRAS ---
+    # 2. GRÁFICO DIÁRIO COMPARATIVO
     st.subheader("📊 Comparativo Diário: Teto Permitido vs. Gasto Real")
 
-    # Controles de visualização para celular/desktop
     visao_grafico = st.radio(
         "Filtrar período no gráfico:",
         ["📅 Mês Completo", "🔍 Apenas Dias com Gastos", "📆 1ª Quinzena (1 a 15)", "📆 2ª Quinzena (16 ao Fim)"],
@@ -369,13 +433,10 @@ if menu == "📊 Calendário e Gráfico Diário":
     else:
         df_plot = df_dados_grafico.copy()
 
-    # Rótulos de texto que aparecem dentro/sobre as barras
     textos_teto = [f"R$ {t:,.0f}" if t > 0 else "" for t in df_plot["teto"]]
     textos_gasto = [f"R$ {g:,.0f}" if g > 0 else "" for g in df_plot["gasto"]]
 
     fig = go.Figure()
-
-    # Barra 1: Teto Permitido (Azul Céu)
     fig.add_trace(go.Bar(
         x=df_plot["dia_label"],
         y=df_plot["teto"],
@@ -387,8 +448,6 @@ if menu == "📊 Calendário e Gráfico Diário":
         textposition="auto",
         hovertemplate="<b>%{x}</b><br>Teto Permitido: R$ %{y:,.2f}<extra></extra>"
     ))
-
-    # Barra 2: Gasto Real (Semáforo Colorido)
     fig.add_trace(go.Bar(
         x=df_plot["dia_label"],
         y=df_plot["gasto"],
@@ -413,7 +472,54 @@ if menu == "📊 Calendário e Gráfico Diário":
     st.plotly_chart(fig, use_container_width=True)
 
     st.write("")
-    st.subheader("Tabela do Dia 1 ao Fim do Mês")
+
+    # 3. DISTRIBUIÇÃO POR CATEGORIAS & TOP 3 GASTOS
+    st.subheader("🍩 Distribuição por Categorias & Top 3 Maiores Gastos")
+    col_cat1, col_cat2 = st.columns([1.2, 1])
+
+    with col_cat1:
+        if not df_gastos.empty:
+            df_cat = df_gastos.groupby("categoria")["valor"].sum().reset_index()
+            fig_donut = px.pie(
+                df_cat,
+                values="valor",
+                names="categoria",
+                hole=0.55,
+                color_discrete_sequence=["#38bdf8", "#8b5cf6", "#ec4899", "#10b981", "#f59e0b", "#6366f1"]
+            )
+            fig_donut.update_layout(
+                template="plotly_dark",
+                height=300,
+                margin=dict(l=10, r=10, t=10, b=10),
+                legend=dict(orientation="h", y=-0.15)
+            )
+            st.plotly_chart(fig_donut, use_container_width=True)
+        else:
+            st.info("Nenhum gasto avulso lançado ainda para gerar a distribuição.")
+
+    with col_cat2:
+        st.markdown("##### 🏆 Maiores Despesas Registradas")
+        if not df_gastos.empty:
+            df_top3 = df_gastos.sort_values(by="valor", ascending=False).head(3)
+            for idx, r_top in df_top3.iterrows():
+                pag_txt = f"{r_top['forma_pagamento']} ({r_top['cartao_banco']})" if (pd.notna(r_top.get('cartao_banco')) and str(r_top.get('cartao_banco')).strip() != '') else r_top.get('forma_pagamento', '')
+                st.markdown(f"""
+                <div class="top-item-box">
+                    <div>
+                        <span style="background:#232734; color:#38bdf8; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold;">Dia {int(r_top['dia']):02d}</span>
+                        <b style="margin-left:6px; font-size:14px;">{r_top['descricao']}</b>
+                        <div style="font-size:11px; color:#94a3b8; margin-top:2px;">{r_top['categoria']} • {pag_txt}</div>
+                    </div>
+                    <span style="color:#f43f5e; font-weight:bold; font-size:15px;">R$ {r_top['valor']:,.2f}</span>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.caption("Ao registrar despesas, as maiores do mês aparecerão aqui.")
+
+    st.write("")
+
+    # TABELA COM FUNDO COLORIDO E MARCAÇÃO DE HOJE
+    st.subheader("📋 Tabela do Dia 1 ao Fim do Mês")
 
     def colorir_linhas(row):
         c = cores_status[row.name]
@@ -533,7 +639,7 @@ if menu == "📊 Calendário e Gráfico Diário":
         st.info("💳 Nenhum gasto em cartão registrado neste mês ainda. Ao registrar compras no cartão, os comparativos aparecerão aqui!")
 
 # =========================================================
-# TELA 2: CONFIGURAÇÃO DE RENDA E REGRAS
+# TELA 2: CONFIGURAÇÃO DE RENDA, REGRAS & BACKUP
 # =========================================================
 elif menu == "⚙️ Configurar Renda e Regras":
     st.title("Configurar Renda, Poupança e Regras")
@@ -566,6 +672,40 @@ elif menu == "⚙️ Configurar Renda e Regras":
             conn.commit()
             st.success("Configurações salvas!")
             st.rerun()
+
+    st.divider()
+
+    # 4. SEGURANÇA E BACKUP EM CSV
+    st.subheader("📥 Backup dos Dados (Exportação para Excel / CSV)")
+    st.caption("Baixe uma cópia dos seus lançamentos para garantir que você nunca perca seus registros:")
+
+    df_todos_gastos = pd.read_sql_query("SELECT * FROM gastos_diarios", conn)
+    df_todos_fixos = pd.read_sql_query("SELECT * FROM despesas_fixas", conn)
+
+    col_bk1, col_bk2 = st.columns(2)
+    with col_bk1:
+        if not df_todos_gastos.empty:
+            csv_gastos = df_todos_gastos.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📄 Baixar Todos os Gastos Diários (.csv)",
+                data=csv_gastos,
+                file_name=f"backup_gastos_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("Nenhum gasto diário registrado ainda para exportar.")
+
+    with col_bk2:
+        if not df_todos_fixos.empty:
+            csv_fixos = df_todos_fixos.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📄 Baixar Despesas Fixas e Parcelas (.csv)",
+                data=csv_fixos,
+                file_name=f"backup_fixos_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("Nenhuma despesa fixa registrada ainda para exportar.")
 
 # =========================================================
 # TELA 3: LANÇAMENTO DE GASTOS DIÁRIOS
