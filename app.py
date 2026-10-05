@@ -144,7 +144,6 @@ mes_selecionado = st.sidebar.selectbox("Mês", meses_nomes, index=mes_atual_idx)
 mes_num = meses_nomes.index(mes_selecionado) + 1
 dias_no_mes = calendar.monthrange(ano_atual, mes_num)[1]
 
-# Inclusão da nova aba "Patrimônio"
 menu = st.sidebar.radio(
     "Ir para:",
     [
@@ -490,19 +489,20 @@ elif menu == "💸 Lançar Gasto Diário":
         st.info("Nenhum gasto avulso registrado neste mês ainda.")
 
 # =========================================================
-# TELA 4: GASTOS FIXOS E PARCELAS
+# TELA 4: GASTOS FIXOS E PARCELAS (ATUALIZADA COM CANCELAMENTO SEGURO)
 # =========================================================
 elif menu == "📌 Gastos Fixos & Parcelas":
     st.title("Despesas Fixas e Parcelamentos")
 
     with st.form("form_fixo", clear_on_submit=True):
-        f_nome = st.text_input("Nome da conta (ex: Aluguel, Parcela Sofá)")
+        st.subheader("Novo Lançamento Fixo / Parcela")
+        f_nome = st.text_input("Nome da Conta (ex: Aluguel, Plano de Saúde, Parcela Celular)")
         f_val = st.number_input("Valor Mensal (R$)", min_value=1.0, step=10.0)
         f_tipo = st.selectbox("Tipo de Conta", ["Fixo Contínuo", "Parcelamento"])
 
         c1, c2 = st.columns(2)
-        p_at = c1.number_input("Parcela Atual", min_value=1, value=1)
-        p_tot = c2.number_input("Total de Parcelas", min_value=1, value=1)
+        p_at = c1.number_input("Parcela Atual (se for parcelado)", min_value=1, value=1)
+        p_tot = c2.number_input("Total de Parcelas (se for parcelado)", min_value=1, value=1)
 
         if st.form_submit_button("Salvar Despesa Fixa"):
             tipo_bd = "Parcela" if "Parcelamento" in f_tipo else "Fixo"
@@ -511,31 +511,49 @@ elif menu == "📌 Gastos Fixos & Parcelas":
                 VALUES (?, ?, ?, ?, ?)
             """, (f_nome, f_val, tipo_bd, p_at, p_tot))
             conn.commit()
-            st.success("Conta fixa cadastrada!")
+            st.success("Despesa fixa cadastrada com sucesso!")
             st.rerun()
 
-    st.subheader("Contas Cadastradas")
+    st.subheader("Contas Fixas e Parcelas Cadastradas")
     if not df_fixos.empty:
+        df_mostrar_fixos = df_fixos.copy()
+        df_mostrar_fixos["Parcelas"] = df_mostrar_fixos.apply(
+            lambda r: f"{int(r['parcela_atual'])} / {int(r['total_parcelas'])}" if r["tipo"] == "Parcela" else "Contínuo",
+            axis=1
+        )
+        tabela_fixos = df_mostrar_fixos[["descricao", "tipo", "valor", "Parcelas"]].copy()
+        tabela_fixos.columns = ["Descrição", "Tipo", "Valor Mensal", "Parcelas"]
+
         st.dataframe(
-            df_fixos[["descricao", "valor", "tipo", "parcela_atual", "total_parcelas"]].rename(columns={
-                "descricao": "Descrição",
-                "valor": "Valor Mensal (R$)",
-                "tipo": "Tipo",
-                "parcela_atual": "Parcela Atual",
-                "total_parcelas": "Total de Parcelas"
-            }).style.format({"Valor Mensal (R$)": "R$ {:,.2f}"}),
+            tabela_fixos.style.format({"Valor Mensal": "R$ {:,.2f}"}),
             use_container_width=True,
             hide_index=True
         )
 
-        remover = st.selectbox("Excluir conta quitada:", df_fixos["descricao"].tolist())
-        if st.button("Remover Conta"):
-            cursor.execute("DELETE FROM despesas_fixas WHERE descricao = ?", (remover,))
+        st.markdown("#### 🗑️️ Cancelar / Excluir Despesa Lançada Errada")
+        st.caption("Selecione um item que você lançou por engano ou que deseja encerrar:")
+
+        opcoes_fixos_excluir = {
+            f"{r['descricao']} ({r['tipo']}) — R$ {r['valor']:,.2f}" +
+            (f" [{int(r['parcela_atual'])}/{int(r['total_parcelas'])}]" if r['tipo'] == 'Parcela' else "") +
+            f" (Cód #{r['id']})": int(r['id'])
+            for _, r in df_fixos.iterrows()
+        }
+
+        item_fixo_sel = st.selectbox(
+            "Selecione a conta para apagar:",
+            options=list(opcoes_fixos_excluir.keys()),
+            key="select_apagar_fixo"
+        )
+
+        if st.button("Cancelar / Apagar Esta Despesa", type="secondary"):
+            id_para_remover = opcoes_fixos_excluir[item_fixo_sel]
+            cursor.execute("DELETE FROM despesas_fixas WHERE id = ?", (id_para_remover,))
             conn.commit()
-            st.success(f"Conta '{remover}' removida!")
+            st.success("Conta removida com sucesso! O orçamento livre foi recalculado.")
             st.rerun()
     else:
-        st.info("Nenhuma despesa fixa cadastrada.")
+        st.info("Nenhuma despesa fixa ou parcelamento cadastrado no momento.")
 
 # =========================================================
 # TELA 5: PATRIMÔNIO & PROJEÇÃO
@@ -543,22 +561,18 @@ elif menu == "📌 Gastos Fixos & Parcelas":
 elif menu == "💰 Patrimônio":
     st.title("Gestão de Patrimônio e Projeção de Reserva")
 
-    # Recupera patrimônio base inicial
     cursor.execute("SELECT saldo_inicial FROM patrimonio_base WHERE id = 1")
     row_base = cursor.fetchone()
     patrimonio_inicial = row_base[0] if row_base else 0.0
 
-    # Recupera todos os aportes consolidados
     df_aportes = pd.read_sql_query("SELECT ano, mes, valor, data_consolidacao FROM aportes_consolidados", conn)
     total_aportado_historico = df_aportes["valor"].sum() if not df_aportes.empty else 0.0
     patrimonio_atual_total = patrimonio_inicial + total_aportado_historico
 
-    # Recupera status do mês selecionado
     cursor.execute("SELECT valor FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
     row_aporte_mes = cursor.fetchone()
     aporte_consolidado_mes = row_aporte_mes[0] if row_aporte_mes else None
 
-    # CARDS PRINCIPAIS DE PATRIMÔNIO
     c_p1, c_p2, c_p3 = st.columns(3)
     with c_p1:
         st.markdown(f"""
@@ -584,7 +598,6 @@ elif menu == "💰 Patrimônio":
 
     st.divider()
 
-    # BLOCO 1: DEFINIR PATRIMÔNIO INICIAL
     st.subheader("1. Definir Patrimônio Inicial")
     st.caption("Informe quanto você já tem guardado/investido hoje (deixe 0 se estiver começando do zero):")
 
@@ -603,7 +616,6 @@ elif menu == "💰 Patrimônio":
 
     st.divider()
 
-    # BLOCO 2: CONSOLIDAR O MÊS ATUAL
     st.subheader(f"2. Fechamento de {mes_selecionado}/{ano_atual}")
     st.caption("Ao finalizar o mês, transfira o que você realmente conseguiu poupar para somar ao seu patrimônio:")
 
@@ -636,11 +648,9 @@ elif menu == "💰 Patrimônio":
 
     st.divider()
 
-    # BLOCO 3: TABELA E GRÁFICO DE PROJEÇÃO ATÉ O FINAL DO ANO
     st.subheader(f"3. Projeção Patrimonial — Ano de {ano_atual}")
     st.caption(f"Previsão mês a mês somando o patrimônio inicial com aportes realizados e projetados (Meta base: R$ {meta_poupanca:,.2f}/mês):")
 
-    # Mapeamento de aportes consolidados deste ano
     aportes_ano_map = {}
     if not df_aportes.empty:
         df_ano_atual = df_aportes[df_aportes["ano"] == ano_atual]
@@ -668,7 +678,6 @@ elif menu == "💰 Patrimônio":
 
     df_proj_tabela = pd.DataFrame(dados_proj)
 
-    # GRÁFICO DE CRESCIMENTO DO PATRIMÔNIO
     fig_proj = go.Figure()
     fig_proj.add_trace(go.Scatter(
         x=df_proj_tabela["Mês"],
@@ -688,7 +697,6 @@ elif menu == "💰 Patrimônio":
     )
     st.plotly_chart(fig_proj, use_container_width=True)
 
-    # TABELA FORMATADA DE PROJEÇÃO
     st.dataframe(
         df_proj_tabela[["Mês", "Situação", "Poupança / Aporte (R$)", "Patrimônio Acumulado (R$)"]].style.format({
             "Poupança / Aporte (R$)": "R$ {:,.2f}",
