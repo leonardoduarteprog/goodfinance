@@ -1,459 +1,368 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import plotly.express as px
+import calendar
+from datetime import datetime, date
 import plotly.graph_objects as go
-from datetime import datetime
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Dashboard Finanças",
-    page_icon="🟣",
+    page_title="Controle Orçamentário Diário",
+    page_icon="💳",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILIZAÇÃO CSS (Dark Glow inspirado na referência) ---
+# --- ESTILIZAÇÃO DARK GLOW ---
 st.markdown("""
 <style>
-    /* Fundo escuro geral */
     .stApp {
         background-color: #0b0d13;
         color: #f1f5f9;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        font-family: 'Segoe UI', sans-serif;
     }
-    
-    /* Cartões de métricas personalizados */
-    .card-metric {
+    .metric-card {
         background: linear-gradient(145deg, #161922, #11131a);
         border: 1px solid #232734;
-        border-radius: 12px;
-        padding: 16px 20px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
-        margin-bottom: 12px;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
     }
-    .metric-title {
+    .metric-label {
         color: #94a3b8;
-        font-size: 13px;
+        font-size: 12px;
         text-transform: uppercase;
-        letter-spacing: 0.8px;
         font-weight: 600;
     }
-    .metric-value {
+    .metric-num {
         color: #ffffff;
-        font-size: 26px;
+        font-size: 24px;
         font-weight: bold;
         margin-top: 4px;
     }
-    .metric-sub {
-        font-size: 11px;
-        color: #38bdf8;
-        margin-top: 4px;
-    }
-    .alert-free {
-        background: rgba(16, 185, 129, 0.12);
-        border-left: 4px solid #10b981;
-        padding: 10px 14px;
+    .danger-box {
+        background: rgba(239, 68, 68, 0.15);
+        border-left: 4px solid #ef4444;
+        padding: 12px 16px;
         border-radius: 6px;
-        margin-top: 8px;
-        font-size: 13px;
+        color: #fca5a5;
+        margin: 10px 0;
+    }
+    .success-box {
+        background: rgba(16, 185, 129, 0.15);
+        border-left: 4px solid #10b981;
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: #6ee7b7;
+        margin: 10px 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- BANCO DE DADOS LOCAL (SQLite) ---
-conn = sqlite3.connect("financas.db", check_same_thread=False)
+# --- BANCO DE DADOS (SQLite) ---
+conn = sqlite3.connect("orcamento.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Configuração do mês (Renda e Meta de Poupança)
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS receitas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    descricao TEXT,
-    valor REAL,
-    dia_recebimento INTEGER,
+CREATE TABLE IF NOT EXISTS metas_mensais (
+    ano INTEGER,
     mes INTEGER,
-    ano INTEGER
+    renda REAL,
+    poupanca REAL,
+    PRIMARY KEY (ano, mes)
 )
 """)
 
+# Gastos Fixos e Parcelas
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS despesas_fixas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     descricao TEXT,
     valor REAL,
-    tipo TEXT, -- 'fixo_puro', 'parcelamento', 'variavel_media'
-    dia_vencimento INTEGER,
+    tipo TEXT, -- 'Fixo' ou 'Parcela'
     parcela_atual INTEGER,
-    total_parcelas INTEGER,
-    mes_fim INTEGER,
-    ano_fim INTEGER
+    total_parcelas INTEGER
 )
 """)
 
+# Gastos Diários / Variáveis
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS historico_variavel (
+CREATE TABLE IF NOT EXISTS gastos_diarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    descricao TEXT,
-    valor REAL,
+    ano INTEGER,
     mes INTEGER,
-    ano INTEGER
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS despesas_avulsas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dia INTEGER,
     descricao TEXT,
     categoria TEXT,
-    valor REAL,
-    mes INTEGER,
-    ano INTEGER
+    valor REAL
 )
 """)
 conn.commit()
 
-# --- CARGA INICIAL DE DADOS DE EXEMPLO (se vazio) ---
-cursor.execute("SELECT COUNT(*) FROM receitas")
-if cursor.fetchone()[0] == 0:
-    # Receitas com dias diferentes de entrada
-    cursor.executemany("""
-        INSERT INTO receitas (descricao, valor, dia_recebimento, mes, ano) 
-        VALUES (?, ?, ?, ?, ?)
-    """, [
-        ("Salário Principal", 6500.0, 5, 10, 2026),
-        ("Renda Extra / Plantão", 2200.0, 20, 10, 2026),
-        ("Salário Esposa", 4800.0, 10, 10, 2026),
-    ])
-    
-    # Fixos contínuos e parcelamentos com previsão de término
-    cursor.executemany("""
-        INSERT INTO despesas_fixas (descricao, valor, tipo, dia_vencimento, parcela_atual, total_parcelas, mes_fim, ano_fim)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        ("Aluguel + Condomínio", 2400.0, "fixo_puro", 10, 0, 0, 0, 0),
-        ("Internet Fibra", 129.90, "fixo_puro", 15, 0, 0, 0, 0),
-        ("Parcela Sofá (10x)", 340.0, "parcelamento", 8, 8, 10, 12, 2026),
-        ("Parcela Notebook (12x)", 480.0, "parcelamento", 15, 11, 12, 11, 2026),
-    ])
-    
-    # Histórico de consumo para médias (Energia e Água)
-    cursor.executemany("""
-        INSERT INTO historico_variavel (descricao, valor, mes, ano)
-        VALUES (?, ?, ?, ?)
-    """, [
-        ("Energia Elétrica", 340.0, 7, 2026),
-        ("Energia Elétrica", 380.0, 8, 2026),
-        ("Energia Elétrica", 360.0, 9, 2026),
-        ("Energia Elétrica", 355.0, 10, 2026),
-        ("Água / Saneamento", 110.0, 7, 2026),
-        ("Água / Saneamento", 125.0, 8, 2026),
-        ("Água / Saneamento", 118.0, 9, 2026),
-        ("Água / Saneamento", 120.0, 10, 2026),
-    ])
-    
-    # Gastos avulsos do mês
-    cursor.executemany("""
-        INSERT INTO despesas_avulsas (descricao, categoria, valor, mes, ano)
-        VALUES (?, ?, ?, ?, ?)
-    """, [
-        ("Supermercado Mensal", "Subsistência", 1650.0, 10, 2026),
-        ("Combustível", "Transporte", 450.0, 10, 2026),
-        ("Restaurantes & Lazer", "Lazer", 820.0, 10, 2026),
-        ("Farmácia", "Saúde", 210.0, 10, 2026),
-        ("Streaming / Jogos", "Lazer", 145.0, 10, 2026),
-    ])
-    conn.commit()
-
-# --- SIDEBAR (NAVEGAÇÃO IGUAL AO DASHBOARD) ---
-st.sidebar.markdown("### 🟣 Finanças Pessoais")
-ano_selecionado = st.sidebar.selectbox("Ano de Referência", [2025, 2026, 2027], index=1)
-
+# --- BARRA LATERAL: SELEÇÃO DE DATA E NAVEGAÇÃO ---
+st.sidebar.markdown("### 🗓️ Período de Análise")
+ano_atual = st.sidebar.selectbox("Ano", [2025, 2026, 2027], index=1)
 meses_nomes = [
     "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
 ]
-mes_nome = st.sidebar.radio("Selecione o Mês", meses_nomes, index=9)
-mes_num = meses_nomes.index(mes_nome) + 1
+mes_selecionado = st.sidebar.selectbox("Mês", meses_nomes, index=9)
+mes_num = meses_nomes.index(mes_selecionado) + 1
+dias_no_mes = calendar.monthrange(ano_atual, mes_num)[1]
 
-menu = st.sidebar.radio("Menu", ["📊 Dashboard Geral", "➕ Lançamentos & Parcelas"])
-
-# --- CONSULTAS DOS DADOS FILTRADOS ---
-# 1. Receitas do mês
-df_rec = pd.read_sql_query(
-    "SELECT descricao, valor, dia_recebimento FROM receitas WHERE mes = ? AND ano = ? ORDER BY dia_recebimento ASC",
-    conn, params=(mes_num, ano_selecionado)
+menu = st.sidebar.radio(
+    "Navegação",
+    ["📊 Visão Geral & Calendário Diário", "⚙️ Configurar Renda e Poupança", "💸 Lançar Gasto Diário", "📌 Gastos Fixos & Parcelas"]
 )
-total_receitas = df_rec["valor"].sum() if not df_rec.empty else 0.0
 
-# 2. Despesas Fixas & Parcelamentos
-df_fixos = pd.read_sql_query(
-    "SELECT descricao, valor, tipo, dia_vencimento, parcela_atual, total_parcelas, mes_fim, ano_fim FROM despesas_fixas",
-    conn
+# --- CONSULTA DE PARÂMETROS DO MÊS ---
+cursor.execute("SELECT renda, poupanca FROM metas_mensais WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
+config_row = cursor.fetchone()
+renda_mensal = config_row[0] if config_row else 10000.0
+meta_poupanca = config_row[1] if config_row else 1500.0
+
+# Despesas Fixas e Parcelas Totais
+df_fixos = pd.read_sql_query("SELECT id, descricao, valor, tipo, parcela_atual, total_parcelas FROM despesas_fixas", conn)
+total_fixos = df_fixos["valor"].sum() if not df_fixos.empty else 0.0
+
+# Orçamento livre total para os dias
+saldo_livre_mes = renda_mensal - meta_poupanca - total_fixos
+meta_diaria = saldo_livre_mes / dias_no_mes if dias_no_mes > 0 else 0.0
+
+# Gastos Diários Lançados
+df_gastos = pd.read_sql_query(
+    "SELECT id, dia, descricao, categoria, valor FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC",
+    conn, params=(ano_atual, mes_num)
 )
-total_fixos_puros = df_fixos[df_fixos["tipo"] == "fixo_puro"]["valor"].sum()
-total_parcelamentos = df_fixos[df_fixos["tipo"] == "parcelamento"]["valor"].sum()
+total_gasto_variavel = df_gastos["valor"].sum() if not df_gastos.empty else 0.0
+saldo_restante_real = saldo_livre_mes - total_gasto_variavel
 
-# 3. Contas Variáveis com cálculo de média
-df_variaveis = pd.read_sql_query(
-    "SELECT descricao, AVG(valor) as media_estimada, COUNT(valor) as total_meses FROM historico_variavel GROUP BY descricao",
-    conn
-)
-total_variaveis_estimado = df_variaveis["media_estimada"].sum() if not df_variaveis.empty else 0.0
-
-# 4. Despesas Avulsas do mês
-df_avulsos = pd.read_sql_query(
-    "SELECT descricao, categoria, valor FROM despesas_avulsas WHERE mes = ? AND ano = ?",
-    conn, params=(mes_num, ano_selecionado)
-)
-total_avulsos = df_avulsos["valor"].sum() if not df_avulsos.empty else 0.0
-
-total_despesas_mes = total_fixos_puros + total_parcelamentos + total_variaveis_estimado + total_avulsos
-saldo_mes = total_receitas - total_despesas_mes
-
-# --- TELA 1: DASHBOARD GERAL ---
-if menu == "📊 Dashboard Geral":
-    st.title(f"Visão Geral — {mes_nome} de {ano_selecionado}")
-
-    # CARDS SUPERIORES
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.markdown(f"""
-        <div class="card-metric" style="border-top: 3px solid #3b82f6;">
-            <div class="metric-title">Saldo Líquido Previsto</div>
-            <div class="metric-value">R$ {saldo_mes:,.2f}</div>
-            <div class="metric-sub">Receita menos despesas estimadas</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col2:
-        st.markdown(f"""
-        <div class="card-metric" style="border-top: 3px solid #ec4899;">
-            <div class="metric-title">Despesas Totais do Mês</div>
-            <div class="metric-value">R$ {total_despesas_mes:,.2f}</div>
-            <div class="metric-sub">Fixos + Parcelas + Médias + Avulsos</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown(f"""
-        <div class="card-metric" style="border-top: 3px solid #8b5cf6;">
-            <div class="metric-title">Receitas Confirmadas</div>
-            <div class="metric-value">R$ {total_receitas:,.2f}</div>
-            <div class="metric-sub">{len(df_rec)} entradas programadas</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
-        pct_comprometido = (total_despesas_mes / total_receitas * 100) if total_receitas > 0 else 0
-        st.markdown(f"""
-        <div class="card-metric" style="border-top: 3px solid #10b981;">
-            <div class="metric-title">Comprometimento de Renda</div>
-            <div class="metric-value">{pct_comprometido:.1f}%</div>
-            <div class="metric-sub">Taxa de consumo mensal</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.write("")
-
-    # SEÇÃO INTERMEDIÁRIA: DIAS DE ENTRADA & PARCELAS A TERMINAR
-    c_rec_dias, c_parc_aviso = st.columns([1, 1])
-
-    with c_rec_dias:
-        st.subheader("📅 Entradas por Dia no Mês")
-        if not df_rec.empty:
-            for _, r in df_rec.iterrows():
-                st.markdown(f"""
-                <div style="background:#161922; padding:10px 14px; border-radius:8px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; border:1px solid #232734;">
-                    <div>
-                        <span style="background:#3b82f6; color:#fff; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:12px;">Dia {int(r['dia_recebimento']):02d}</span>
-                        <strong style="margin-left:10px;">{r['descricao']}</strong>
-                    </div>
-                    <span style="color:#10b981; font-weight:bold;">+ R$ {r['valor']:,.2f}</span>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("Nenhuma receita registrada neste mês.")
-
-    with c_parc_aviso:
-        st.subheader("⏳ Parcelamentos & Dinheiro Liberado")
-        df_parc = df_fixos[df_fixos["tipo"] == "parcelamento"]
-        if not df_parc.empty:
-            for _, p in df_parc.iterrows():
-                fim_txt = f"{meses_nomes[int(p['mes_fim'])-1]}/{int(p['ano_fim'])}"
-                restantes = int(p['total_parcelas']) - int(p['parcela_atual'])
-                st.markdown(f"""
-                <div style="background:#161922; padding:12px; border-radius:8px; margin-bottom:8px; border:1px solid #232734;">
-                    <div style="display:flex; justify-content:space-between;">
-                        <strong>{p['descricao']}</strong>
-                        <span style="color:#f43f5e; font-weight:bold;">R$ {p['valor']:,.2f}/mês</span>
-                    </div>
-                    <div style="font-size:12px; color:#94a3b8; margin-top:4px;">
-                        Parcela {int(p['parcela_atual'])} de {int(p['total_parcelas'])} ({restantes} restantes)
-                    </div>
-                    <div class="alert-free">
-                        ✅ Acaba em <b>{fim_txt}</b>! A partir daí, sobrará <b>R$ {p['valor']:,.2f}/mês</b> no seu orçamento.
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("Nenhum parcelamento ativo cadastrado.")
-
-    st.write("")
-
-    # SEÇÃO INFERIOR: GRÁFICOS NO ESTILO DO PAINEL
-    g_col1, g_col2 = st.columns([1.2, 1])
-
-    with g_col1:
-        st.subheader("📊 Comparativo de Categorias")
-        
-        # Consolida categorias de todas as despesas
-        cat_data = [
-            {"Categoria": "Fixos (Aluguel/Net)", "Valor": total_fixos_puros},
-            {"Categoria": "Parcelamentos Ativos", "Valor": total_parcelamentos},
-            {"Categoria": "Consumo Variável (Média)", "Valor": total_variaveis_estimado},
-        ]
-        for _, av in df_avulsos.iterrows():
-            cat_data.append({"Categoria": av["categoria"], "Valor": av["valor"]})
-        
-        df_cat = pd.DataFrame(cat_data).groupby("Categoria")["Valor"].sum().reset_index()
-
-        fig_bar = px.bar(
-            df_cat,
-            x="Valor",
-            y="Categoria",
-            orientation="h",
-            color="Valor",
-            color_continuous_scale=["#6366f1", "#ec4899"],
-            text_auto=".2s"
-        )
-        fig_bar.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#cbd5e1",
-            height=320,
-            margin=dict(l=0, r=20, t=10, b=10),
-            coloraxis_showscale=False
-        )
-        fig_bar.update_xaxes(gridcolor="#1e2230")
-        fig_bar.update_yaxes(gridcolor="#1e2230")
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    with g_col2:
-        st.subheader("🍩 Distribuição das Despesas")
-        fig_donut = px.pie(
-            df_cat,
-            values="Valor",
-            names="Categoria",
-            hole=0.6,
-            color_discrete_sequence=["#3b82f6", "#8b5cf6", "#ec4899", "#10b981", "#f59e0b"]
-        )
-        fig_donut.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#cbd5e1",
-            height=320,
-            margin=dict(l=0, r=0, t=10, b=10),
-            legend=dict(orientation="h", y=-0.1)
-        )
-        st.plotly_chart(fig_donut, use_container_width=True)
-
-    st.write("")
+# =========================================================
+# TELA 1: DASHBOARD GERAL E PROJEÇÃO DIÁRIA
+# =========================================================
+if menu == "📊 Visão Geral & Calendário Diário":
+    st.title(f"Acompanhamento Diário — {mes_selecionado}/{ano_atual}")
     
-    # SEÇÃO DE MÉDIAS DE CONSUMO (Água, Energia, etc.)
-    st.subheader("⚡ Contas de Consumo com Média Histórica")
-    m_cols = st.columns(len(df_variaveis) if not df_variaveis.empty else 1)
-    if not df_variaveis.empty:
-        for idx, row in df_variaveis.iterrows():
-            with m_cols[idx]:
-                st.markdown(f"""
-                <div class="card-metric" style="border-left: 4px solid #f59e0b;">
-                    <div class="metric-title">{row['descricao']}</div>
-                    <div class="metric-value">R$ {row['media_estimada']:,.2f}</div>
-                    <div class="metric-sub">Média calculada sobre {int(row['total_meses'])} faturas registradas</div>
-                </div>
-                """, unsafe_allow_html=True)
+    # Linha de Métricas Principais
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #3b82f6;">
+            <div class="metric-label">Renda Mensal</div>
+            <div class="metric-num">R$ {renda_mensal:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #10b981;">
+            <div class="metric-label">Poupança / Reserva</div>
+            <div class="metric-num">R$ {meta_poupanca:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c3:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #f59e0b;">
+            <div class="metric-label">Fixos & Parcelas</div>
+            <div class="metric-num">R$ {total_fixos:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c4:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
+            <div class="metric-label">Disponível p/ Mês</div>
+            <div class="metric-num">R$ {saldo_livre_mes:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c5:
+        st.markdown(f"""
+        <div class="metric-card" style="border-top: 3px solid #06b6d4;">
+            <div class="metric-label">Teto Sugerido / Dia</div>
+            <div class="metric-num">R$ {meta_diaria:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Construção da tabela do Dia 1 ao último dia do mês
+    tabela_dias = []
+    saldo_acumulado = saldo_livre_mes
+    dia_negativo = None
+
+    gastos_por_dia = df_gastos.groupby("dia")["valor"].sum().to_dict() if not df_gastos.empty else {}
+
+    for d in range(1, dias_no_mes + 1):
+        gasto_do_dia = gastos_por_dia.get(d, 0.0)
+        saldo_acumulado -= gasto_do_dia
+        
+        if saldo_acumulado < 0 and dia_negativo is None:
+            dia_negativo = d
+
+        tabela_dias.append({
+            "Dia": d,
+            "Teto Diário": meta_diaria,
+            "Gasto Real": gasto_do_dia,
+            "Diferença Dia": meta_diaria - gasto_do_dia,
+            "Saldo Restante": saldo_acumulado
+        })
+
+    df_calendario = pd.DataFrame(tabela_dias)
+
+    # Avisos de Saldo
+    if dia_negativo:
+        st.markdown(f"""
+        <div class="danger-box">
+            🚨 <b>Atenção:</b> Seu saldo livre ficou negativo no <b>Dia {dia_negativo}</b>! 
+            Você já gastou mais do que o planejado para o mês. Saldo restante atual: <b>R$ {saldo_restante_real:,.2f}</b>.
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.info("Cadastre lançamentos de contas variáveis para calcular a média histórica.")
+        st.markdown(f"""
+        <div class="success-box">
+            ✅ <b>Dentro do planejado:</b> Você ainda possui <b>R$ {saldo_restante_real:,.2f}</b> livres para gastar até o final de {mes_selecionado}.
+        </div>
+        """, unsafe_allow_html=True)
 
-# --- TELA 2: LANÇAMENTOS E CADASTROS ---
-else:
-    st.title("➕ Cadastrar e Gerenciar Contas")
+    # GRÁFICO: CURVA DO DIA 1 AO ÚLTIMO DIA DO MÊS
+    st.subheader(f"📈 Curva de Saldo do Dia 1 ao {dias_no_mes}")
+
+    fig = go.Figure()
+
+    # Linha de Saldo Restante
+    fig.add_trace(go.Scatter(
+        x=df_calendario["Dia"],
+        y=df_calendario["Saldo Restante"],
+        mode="lines+markers",
+        name="Saldo Disponível",
+        line=dict(color="#38bdf8", width=3),
+        marker=dict(size=6)
+    ))
+
+    # Linha zero de corte
+    fig.add_hline(
+        y=0, 
+        line_dash="dash", 
+        line_color="#ef4444", 
+        annotation_text="Limite Zero (Orçamento Esgotado)", 
+        annotation_position="bottom right"
+    )
+
+    fig.update_layout(
+        paper_bgcolor="#11131a",
+        plot_bgcolor="#161922",
+        font_color="#cbd5e1",
+        height=380,
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis=dict(title="Dia do Mês", tickmode="linear", tick0=1, dtick=2, gridcolor="#232734"),
+        yaxis=dict(title="Saldo Restante (R$)", gridcolor="#232734")
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # TABELA DETALHADA DIA A DIA
+    st.subheader("📋 Tabela Orçamentária por Dia")
     
-    aba1, aba2, aba3, aba4 = st.tabs([
-        "💰 Nova Receita", 
-        "⏳ Novo Parcelamento", 
-        "⚡ Conta de Consumo (Média)", 
-        "🛒 Despesa Avulsa"
-    ])
+    # Formatação visual para a tabela
+    df_exibicao = df_calendario.copy()
+    df_exibicao["Teto Diário"] = df_exibicao["Teto Diário"].map(lambda x: f"R$ {x:,.2f}")
+    df_exibicao["Gasto Real"] = df_exibicao["Gasto Real"].map(lambda x: f"R$ {x:,.2f}" if x > 0 else "-")
+    df_exibicao["Diferença Dia"] = df_exibicao["Diferença Dia"].map(lambda x: f"R$ {x:,.2f}")
+    df_exibicao["Saldo Restante"] = df_exibicao["Saldo Restante"].map(lambda x: f"R$ {x:,.2f}")
 
-    with aba1:
-        st.markdown("##### Registrar Receita Mensal")
-        with st.form("form_rec", clear_on_submit=True):
-            rec_desc = st.text_input("Descrição (ex: Salário Leonardo, Salário Esposa, Freelance)")
-            rec_val = st.number_input("Valor da Entrada (R$)", min_value=1.0, step=50.0)
-            rec_dia = st.slider("Dia do Mês em que o dinheiro cai na conta", min_value=1, max_value=31, value=5)
-            
-            if st.form_submit_button("Salvar Receita"):
+    st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+
+# =========================================================
+# TELA 2: CONFIGURAR RENDA E POUPANÇA (ALTERAÇÃO DIRETA NO APP)
+# =========================================================
+elif menu == "⚙️ Configurar Renda e Poupança":
+    st.title(f"Ajustar Valores de {mes_selecionado}/{ano_atual}")
+    st.write("Atualize sua renda mensal e meta de economia diretamente aqui sem precisar mexer em código.")
+
+    with st.form("form_config"):
+        nova_renda = st.number_input("Renda Mensal Total (R$)", min_value=0.0, value=float(renda_mensal), step=100.0)
+        nova_poupanca = st.number_input("Quanto deseja Poupar / Investir neste mês? (R$)", min_value=0.0, value=float(meta_poupanca), step=50.0)
+        
+        salvar_cfg = st.form_submit_button("Salvar Configurações")
+        if salvar_cfg:
+            cursor.execute("""
+                INSERT INTO metas_mensais (ano, mes, renda, poupanca)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(ano, mes) DO UPDATE SET
+                    renda=excluded.renda,
+                    poupanca=excluded.poupanca
+            """, (ano_atual, mes_num, nova_renda, nova_poupanca))
+            conn.commit()
+            st.success("Valores atualizados com sucesso!")
+            st.rerun()
+
+# =========================================================
+# TELA 3: LANÇAR GASTO DIÁRIO
+# =========================================================
+elif menu == "💸 Lançar Gasto Diário":
+    st.title("Registrar Despesa do Dia")
+    
+    with st.form("form_gasto_dia", clear_on_submit=True):
+        dia_gasto = st.slider("Dia do mês em que o gasto ocorreu", 1, dias_no_mes, value=min(date.today().day, dias_no_mes))
+        desc_gasto = st.text_input("Descrição (ex: Almoço, Farmácia, Combustível, Jantar)")
+        cat_gasto = st.selectbox("Categoria", ["Alimentação", "Transporte", "Lazer", "Saúde", "Supermercado", "Outros"])
+        val_gasto = st.number_input("Valor da Despesa (R$)", min_value=0.5, step=5.0)
+
+        salvar_gasto = st.form_submit_button("Lançar Despesa")
+        if salvar_gasto:
+            if desc_gasto.strip() == "":
+                st.warning("Preencha a descrição do gasto.")
+            else:
                 cursor.execute("""
-                    INSERT INTO receitas (descricao, valor, dia_recebimento, mes, ano)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (rec_desc, rec_val, rec_dia, mes_num, ano_selecionado))
+                    INSERT INTO gastos_diarios (ano, mes, dia, descricao, categoria, valor)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (ano_atual, mes_num, dia_gasto, desc_gasto, cat_gasto, val_gasto))
                 conn.commit()
-                st.success("Receita cadastrada com sucesso!")
+                st.success(f"Gasto de R$ {val_gasto:,.2f} no Dia {dia_gasto} lançado!")
                 st.rerun()
 
-    with aba2:
-        st.markdown("##### Cadastrar Compra Parcelada com Previsão de Término")
-        with st.form("form_parc", clear_on_submit=True):
-            p_desc = st.text_input("Descrição (ex: Financiamento Carro, Celular novo, Móveis)")
-            p_val = st.number_input("Valor da Parcela Mensal (R$)", min_value=1.0, step=10.0)
-            p_dia = st.slider("Dia de Vencimento da Fatura", 1, 31, 10)
-            
-            c_p1, c_p2 = st.columns(2)
-            p_atual = c_p1.number_input("Parcela Atual (ex: 3)", min_value=1, value=1)
-            p_total = c_p2.number_input("Total de Parcelas (ex: 12)", min_value=1, value=12)
-            
-            c_f1, c_f2 = st.columns(2)
-            p_mes_fim = c_f1.selectbox("Mês em que termina", range(1, 13), format_func=lambda x: meses_nomes[x-1], index=mes_num-1)
-            p_ano_fim = c_f2.selectbox("Ano em que termina", [2026, 2027, 2028, 2029], index=0)
+    st.subheader("Histórico de Gastos Diários Deste Mês")
+    if not df_gastos.empty:
+        df_show = df_gastos[["dia", "descricao", "categoria", "valor"]].copy()
+        df_show["valor"] = df_show["valor"].map(lambda x: f"R$ {x:,.2f}")
+        df_show.columns = ["Dia", "Descrição", "Categoria", "Valor"]
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum gasto avulso lançado ainda neste mês.")
 
-            if st.form_submit_button("Salvar Parcelamento"):
-                cursor.execute("""
-                    INSERT INTO despesas_fixas (descricao, valor, tipo, dia_vencimento, parcela_atual, total_parcelas, mes_fim, ano_fim)
-                    VALUES (?, ?, 'parcelamento', ?, ?, ?, ?, ?)
-                """, (p_desc, p_val, p_dia, p_atual, p_total, p_mes_fim, p_ano_fim))
-                conn.commit()
-                st.success("Parcelamento salvo com sucesso!")
-                st.rerun()
+# =========================================================
+# TELA 4: GASTOS FIXOS E PARCELAS
+# =========================================================
+elif menu == "📌 Gastos Fixos & Parcelas":
+    st.title("Gastos Fixos e Parcelamentos Contínuos")
 
-    with aba3:
-        st.markdown("##### Registrar Conta de Consumo Variável (para alimentar a média)")
-        with st.form("form_var", clear_on_submit=True):
-            v_desc = st.selectbox("Tipo de Conta", ["Energia Elétrica", "Água / Saneamento", "Gás", "Combustível Mensal"])
-            v_val = st.number_input("Valor da Fatura deste mês (R$)", min_value=1.0, step=10.0)
-            
-            if st.form_submit_button("Lançar Fatura no Histórico"):
-                cursor.execute("""
-                    INSERT INTO historico_variavel (descricao, valor, mes, ano)
-                    VALUES (?, ?, ?, ?)
-                """, (v_desc, v_val, mes_num, ano_selecionado))
-                conn.commit()
-                st.success("Fatura salva! A média foi atualizada automaticamente.")
-                st.rerun()
+    with st.form("form_fixos", clear_on_submit=True):
+        st.subheader("Adicionar Nova Despesa Fixa ou Parcelamento")
+        nome_fixo = st.text_input("Nome da Conta (ex: Aluguel, Condomínio, Parcela TV)")
+        valor_fixo = st.number_input("Valor Mensal (R$)", min_value=1.0, step=10.0)
+        tipo_fixo = st.selectbox("Tipo de Despesa", ["Fixo (Contínuo)", "Parcelamento"])
+        
+        c_p1, c_p2 = st.columns(2)
+        p_atual = c_p1.number_input("Parcela Atual (se for parcelamento)", min_value=1, value=1)
+        p_total = c_p2.number_input("Total de Parcelas (se for parcelamento)", min_value=1, value=1)
 
-    with aba4:
-        st.markdown("##### Registrar Despesa Avulsa / Diária")
-        with st.form("form_avulso", clear_on_submit=True):
-            a_desc = st.text_input("Item / Estabelecimento")
-            a_cat = st.selectbox("Categoria", ["Subsistência", "Moradia", "Transporte", "Saúde", "Lazer", "Vestuário", "Outros"])
-            a_val = st.number_input("Valor Pago (R$)", min_value=0.5, step=5.0)
+        salvar_fixo = st.form_submit_button("Cadastrar Despesa Fixa")
+        if salvar_fixo:
+            tipo_bd = "Parcela" if "Parcelamento" in tipo_fixo else "Fixo"
+            cursor.execute("""
+                INSERT INTO despesas_fixas (descricao, valor, tipo, parcela_atual, total_parcelas)
+                VALUES (?, ?, ?, ?, ?)
+            """, (nome_fixo, valor_fixo, tipo_bd, p_atual, p_total))
+            conn.commit()
+            st.success("Despesa cadastrada!")
+            st.rerun()
 
-            if st.form_submit_button("Registrar Despesa"):
-                cursor.execute("""
-                    INSERT INTO despesas_avulsas (descricao, categoria, valor, mes, ano)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (a_desc, a_cat, a_val, mes_num, ano_selecionado))
-                conn.commit()
-                st.success("Despesa avulsa registrada!")
-                st.rerun()
+    st.subheader("Contas Cadastradas que Abatem da Renda")
+    if not df_fixos.empty:
+        st.dataframe(df_fixos[["descricao", "valor", "tipo", "parcela_atual", "total_parcelas"]], use_container_width=True, hide_index=True)
+        
+        # Opção de remover
+        item_para_remover = st.selectbox("Selecione uma conta para excluir se já foi quitada:", df_fixos["descricao"].tolist())
+        if st.button("Excluir Conta Selecionada"):
+            cursor.execute("DELETE FROM despesas_fixas WHERE descricao = ?", (item_para_remover,))
+            conn.commit()
+            st.success(f"Conta '{item_para_remover}' removida!")
+            st.rerun()
+    else:
+        st.info("Nenhuma despesa fixa cadastrada.")
