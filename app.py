@@ -142,9 +142,9 @@ total_fixos = df_fixos["valor"].sum() if not df_fixos.empty else 0.0
 
 saldo_livre_mes = max(0.0, renda_mensal - meta_poupanca - total_fixos)
 
-# Consulta de gastos lançados no mês
+# Consulta de gastos lançados no mês trazendo o ID
 df_gastos = pd.read_sql_query(
-    "SELECT dia, descricao, categoria, valor FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC",
+    "SELECT id, dia, descricao, categoria, valor FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC, id ASC",
     conn, params=(ano_atual, mes_num)
 )
 gastos_por_dia = df_gastos.groupby("dia")["valor"].sum().to_dict() if not df_gastos.empty else {}
@@ -391,13 +391,12 @@ elif menu == "⚙️ Configurar Renda e Regras":
             st.rerun()
 
 # =========================================================
-# TELA 3: LANÇAMENTO DE GASTOS DIÁRIOS (ATUALIZADA)
+# TELA 3: LANÇAMENTO DE GASTOS DIÁRIOS
 # =========================================================
 elif menu == "💸 Lançar Gasto Diário":
     st.title("Registrar Gasto Diário")
 
     with st.form("form_lancar", clear_on_submit=True):
-        # 1. Digitar o dia diretamente
         dia_sel = st.number_input(
             "Dia do Mês",
             min_value=1,
@@ -406,7 +405,6 @@ elif menu == "💸 Lançar Gasto Diário":
             step=1
         )
 
-        # 2. Categoria acima da descrição com emojis
         lista_categorias = [
             "🍔 Alimentação",
             "🚗 Transporte",
@@ -417,14 +415,9 @@ elif menu == "💸 Lançar Gasto Diário":
             "✏️ Outra / Personalizar"
         ]
         cat_sel = st.selectbox("Categoria", lista_categorias)
-        
-        # Campo aberto para quando quiser personalizar a categoria
         cat_custom = st.text_input("Se selecionou '✏️ Outra / Personalizar', digite o nome da categoria aqui:")
 
-        # 3. Descrição abaixo da categoria
         desc = st.text_input("Descrição do Gasto (ex: Almoço no shopping, Combustível, Farmácia)")
-        
-        # 4. Valor da despesa
         val = st.number_input("Valor da Despesa (R$)", min_value=0.5, step=5.0)
 
         if st.form_submit_button("Confirmar Despesa"):
@@ -445,13 +438,37 @@ elif menu == "💸 Lançar Gasto Diário":
 
     st.subheader("Histórico de Gastos Deste Mês")
     if not df_gastos.empty:
-        df_exibir = df_gastos.copy()
+        # Exibe a tabela sem expor o ID numérico
+        df_exibir = df_gastos[["dia", "descricao", "categoria", "valor"]].copy()
         df_exibir.columns = ["Dia", "Descrição", "Categoria", "Valor"]
         st.dataframe(
             df_exibir.style.format({"Valor": "R$ {:,.2f}"}),
             use_container_width=True,
             hide_index=True
         )
+
+        # ÁREA DE EXCLUSÃO DE GASTOS
+        st.markdown("#### 🗑️ Excluir Gasto Indevido")
+        st.caption("Selecione um lançamento cadastrado por engano para removê-lo da sua base:")
+
+        # Dicionário mapeando a opção legível ao ID interno
+        opcoes_para_excluir = {
+            f"Dia {int(r['dia']):02d} | {r['descricao']} ({r['categoria']}) — R$ {r['valor']:,.2f} (Cód #{r['id']})": int(r['id'])
+            for _, r in df_gastos.iterrows()
+        }
+
+        item_selecionado = st.selectbox(
+            "Selecione o gasto a ser apagado:",
+            options=list(opcoes_para_excluir.keys()),
+            key="select_apagar_gasto"
+        )
+
+        if st.button("Remover Este Lançamento", type="secondary"):
+            id_remover = opcoes_para_excluir[item_selecionado]
+            cursor.execute("DELETE FROM gastos_diarios WHERE id = ?", (id_remover,))
+            conn.commit()
+            st.success("Lançamento removido com sucesso!")
+            st.rerun()
     else:
         st.info("Nenhum gasto avulso registrado neste mês ainda.")
 
