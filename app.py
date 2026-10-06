@@ -18,7 +18,7 @@ try:
 except ImportError:
     REPORTLAB_DISPONIVEL = False
 
-# Função auxiliar para limpar emojis no PDF e garantir tipografia nítida
+# Função auxiliar para limpar emojis no PDF
 def limpar_emojis(texto):
     if not isinstance(texto, str):
         return str(texto)
@@ -35,7 +35,6 @@ def limpar_emojis(texto):
     )
     return emoji_pattern.sub(r'', texto).strip()
 
-# Função geradora do PDF de Gastos Diários
 def gerar_pdf_gastos(df_dados, mes_nome, ano):
     if not REPORTLAB_DISPONIVEL or df_dados.empty:
         return None
@@ -114,7 +113,6 @@ def gerar_pdf_gastos(df_dados, mes_nome, ano):
     doc.build(elements)
     return buffer.getvalue()
 
-# Função geradora do PDF de Despesas Fixas e Parcelas
 def gerar_pdf_fixos(df_dados):
     if not REPORTLAB_DISPONIVEL or df_dados.empty:
         return None
@@ -321,6 +319,16 @@ for col_def in [("forma_pagamento", "TEXT DEFAULT 'PIX'"), ("cartao_banco", "TEX
     except sqlite3.OperationalError:
         pass
 
+# Configuração dos Cartões (Fechamento e Vencimento)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS cartoes_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cartao_banco TEXT UNIQUE,
+    dia_fechamento INTEGER DEFAULT 20,
+    dia_vencimento INTEGER DEFAULT 27
+)
+""")
+
 # Patrimônio
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS patrimonio_base (
@@ -365,6 +373,10 @@ menu = st.sidebar.radio(
         "💰 Patrimônio"
     ]
 )
+
+# --- MAPA DE CONFIGURAÇÃO DE CARTÕES (FECHAMENTO / VENCIMENTO) ---
+df_cfg_cartoes = pd.read_sql_query("SELECT cartao_banco, dia_fechamento, dia_vencimento FROM cartoes_config", conn)
+cfgs_map = {r["cartao_banco"]: (int(r["dia_fechamento"]), int(r["dia_vencimento"])) for _, r in df_cfg_cartoes.iterrows()}
 
 # --- RECUPERAÇÃO DE CONFIGURAÇÕES ---
 cursor.execute("SELECT renda, poupanca, modo_ajuste FROM metas_mensais WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
@@ -520,12 +532,20 @@ if menu == "📊 Calendário e Gráfico Diário":
             cursor.execute("SELECT DISTINCT cartao_banco FROM gastos_diarios WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
             usados_q = [r[0] for r in cursor.fetchall()]
             bancos_base = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
-            opcoes_q = sorted(list(set(bancos_base + usados_q))) + ["✏️ Digitar outro banco / cartão..."]
+            opcoes_q = sorted(list(set(bancos_base + usados_q + list(cfgs_map.keys())))) + ["✏️ Digitar outro banco / cartão..."]
             sel_q_cart = st.selectbox("Cartão / Banco", opcoes_q, key="q_cartao_sel")
             if "Digitar outro" in sel_q_cart:
                 q_cartao = st.text_input("Nome do cartão/banco:", key="q_cartao_input")
             else:
                 q_cartao = sel_q_cart
+
+            # Feedback de fechamento imediato
+            if q_cartao in cfgs_map and "Crédito" in q_forma:
+                c_fech, c_venc = cfgs_map[q_cartao]
+                if int(q_dia) >= c_fech:
+                    st.info(f"💡 **Melhor compra:** Como o gasto é no/após o dia {c_fech}, ele entrará na **fatura do próximo mês** (vencimento dia {c_venc:02d})!")
+                else:
+                    st.caption(f"📌 Compra realizada antes do fechamento (dia {c_fech}). Ela entra na **fatura deste mês**.")
 
         col_qd, col_qv = st.columns([2, 1])
         with col_qd:
@@ -729,101 +749,221 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.divider()
 
-    # --- SEÇÃO DE CARTÕES DE CRÉDITO E DÉBITO ---
-    st.subheader("💳 Raio-X dos Gastos nos Cartões")
+    # --- SEÇÃO INTELIGENTE DE CARTÕES COM DIA DE FECHAMENTO ---
+    st.subheader("💳 Raio-X dos Cartões & Faturas")
 
+    # EXPANDER: CONFIGURAR FECHAMENTO E VENCIMENTO DOS CARTÕES
+    with st.expander("⚙️ Configurar Fechamento e Vencimento das Faturas", expanded=False):
+        st.write("Defina o dia em que a fatura fecha (corte) e o dia em que vence para cada cartão:")
+        
+        cursor.execute("SELECT DISTINCT cartao_banco FROM gastos_diarios WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+        usados_g_all = [r[0] for r in cursor.fetchall()]
+        cursor.execute("SELECT DISTINCT cartao_banco FROM despesas_fixas WHERE cartao_banco IS NOT NULL AND cartao_banco != ''")
+        usados_f_all = [r[0] for r in cursor.fetchall()]
+        bancos_padrao = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
+        lista_opcoes_config_cart = sorted(list(set(bancos_padrao + usados_g_all + usados_f_all + list(cfgs_map.keys()))))
+        lista_opcoes_config_cart.append("✏️ Digitar outro banco / cartão...")
+
+        c_cfg1, c_cfg2, c_cfg3 = st.columns([2, 1, 1])
+        with c_cfg1:
+            cart_sel_cfg = st.selectbox("Cartão / Banco a Configurar", lista_opcoes_config_cart, key="cart_sel_cfg")
+            nome_cart_final = cart_sel_cfg
+            if "Digitar outro" in cart_sel_cfg:
+                nome_cart_final = st.text_input("Nome do Cartão:", key="outro_cart_cfg")
+        with c_cfg2:
+            val_fech_default = cfgs_map.get(nome_cart_final, (20, 27))[0] if nome_cart_final in cfgs_map else 20
+            dia_fech_input = st.number_input("Dia Fechamento (Corte)", min_value=1, max_value=31, value=int(val_fech_default), key="dia_fech_input")
+        with c_cfg3:
+            val_venc_default = cfgs_map.get(nome_cart_final, (20, 27))[1] if nome_cart_final in cfgs_map else 27
+            dia_venc_input = st.number_input("Dia Vencimento", min_value=1, max_value=31, value=int(val_venc_default), key="dia_venc_input")
+
+        if st.button("Salvar Regra da Fatura", type="primary", key="btn_salvar_regra_cartao"):
+            if nome_cart_final.strip() == "":
+                st.warning("Preencha o nome do cartão.")
+            else:
+                cursor.execute("""
+                    INSERT INTO cartoes_config (cartao_banco, dia_fechamento, dia_vencimento)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(cartao_banco) DO UPDATE SET
+                        dia_fechamento=excluded.dia_fechamento,
+                        dia_vencimento=excluded.dia_vencimento
+                """, (nome_cart_final.strip(), int(dia_fech_input), int(dia_venc_input)))
+                conn.commit()
+                st.success(f"Regra da fatura do '{nome_cart_final.strip()}' salva com sucesso!")
+                st.rerun()
+
+        # Lista rápida de cartões configurados
+        if not df_cfg_cartoes.empty:
+            st.markdown("###### Cartões com Fechamento Salvo:")
+            st.dataframe(
+                df_cfg_cartoes.rename(columns={
+                    "cartao_banco": "Cartão",
+                    "dia_fechamento": "Dia Fechamento",
+                    "dia_vencimento": "Dia Vencimento"
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    st.write("")
+
+    # APRESENTAÇÃO DOS CARTÕES ATIVOS NO MÊS
     df_cartoes = df_gastos[df_gastos["forma_pagamento"].str.contains("Cartão", na=False)].copy()
 
-    if not df_cartoes.empty:
-        df_cartoes["cartao_banco"] = df_cartoes["cartao_banco"].apply(
-            lambda x: x.strip() if pd.notna(x) and str(x).strip() != '' else 'Outro / Não Definido'
-        )
+    # Identificar todos os cartões que tiveram movimentação ou parcelas
+    cartoes_no_mes = sorted(list(set(df_cartoes["cartao_banco"].dropna().tolist() + [r['cartao_banco'] for _, r in df_fixos[df_fixos['forma_pagamento'].str.contains('Cartão', na=False)].iterrows() if r.get('cartao_banco')])))
+    cartoes_no_mes = [c for c in cartoes_no_mes if str(c).strip() != '']
 
-        total_cartoes = df_cartoes["valor"].sum()
-        dias_com_cartao = df_cartoes["dia"].nunique()
-        media_dia_uso = (total_cartoes / dias_com_cartao) if dias_com_cartao > 0 else 0.0
+    # Se não houver cartões com despesa mas houver cartões configurados, lista os configurados
+    if not cartoes_no_mes and cfgs_map:
+        cartoes_no_mes = list(cfgs_map.keys())
 
-        c_c1, c_c2, c_c3 = st.columns(3)
-        with c_c1:
-            st.markdown(f"""
-            <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
-                <div class="metric-label">Total Gasto em Cartões</div>
-                <div class="metric-num">R$ {total_cartoes:,.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c_c2:
-            cartao_top = df_cartoes.groupby("cartao_banco")["valor"].sum().idxmax()
-            st.markdown(f"""
-            <div class="metric-card" style="border-top: 3px solid #ec4899;">
-                <div class="metric-label">Cartão Mais Utilizado</div>
-                <div class="metric-num" style="font-size: 19px;">{cartao_top}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c_c3:
-            st.markdown(f"""
-            <div class="metric-card" style="border-top: 3px solid #06b6d4;">
-                <div class="metric-label">Média por Dia de Compra</div>
-                <div class="metric-num">R$ {media_dia_uso:,.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
+    if cartoes_no_mes:
+        # Meses anterior para cálculo do ciclo
+        prev_mes = 12 if mes_num == 1 else mes_num - 1
+        prev_ano = ano_atual - 1 if mes_num == 1 else ano_atual
 
+        cols_cards = st.columns(min(len(cartoes_no_mes), 3))
+        for idx, c_banco in enumerate(cartoes_no_mes):
+            col_target = cols_cards[idx % min(len(cartoes_no_mes), 3)]
+            fech_dia, venc_dia = cfgs_map.get(c_banco, (20, 27))
+            tem_config = c_banco in cfgs_map
+
+            # 1. Compras do mês anterior pós-fechamento
+            cursor.execute("""
+                SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
+                WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia >= ?
+            """, (prev_ano, prev_mes, c_banco, fech_dia))
+            val_prev_pos = cursor.fetchone()[0]
+
+            # 2. Compras deste mês pré-fechamento
+            cursor.execute("""
+                SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
+                WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia < ?
+            """, (ano_atual, mes_num, c_banco, fech_dia))
+            val_curr_pre = cursor.fetchone()[0]
+
+            # 3. Parcelas fixas neste cartão
+            cursor.execute("""
+                SELECT COALESCE(SUM(valor), 0.0) FROM despesas_fixas 
+                WHERE cartao_banco = ? AND forma_pagamento LIKE '%Crédito%'
+            """, (c_banco,))
+            val_fixos_cart = cursor.fetchone()[0]
+
+            # Fatura a pagar no mês
+            fatura_mes_total = val_prev_pos + val_curr_pre + val_fixos_cart
+
+            # 4. Compras deste mês pós-fechamento (jogadas para o próximo mês)
+            cursor.execute("""
+                SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
+                WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia >= ?
+            """, (ano_atual, mes_num, c_banco, fech_dia))
+            val_prox_fatura = cursor.fetchone()[0]
+
+            # Status de fechamento
+            if mes_eh_atual:
+                fatura_fechada = hoje_dia >= fech_dia
+            else:
+                fatura_fechada = (ano_atual < date.today().year) or (ano_atual == date.today().year and mes_num < date.today().month)
+
+            if fatura_fechada:
+                tag_status = f"🔒 Fatura Fechada (Vence dia {venc_dia:02d})"
+                tag_cor = "#ef4444"
+                tag_bg = "rgba(239, 68, 68, 0.15)"
+            else:
+                tag_status = f"🟢 Fatura Aberta (Fecha dia {fech_dia:02d})"
+                tag_cor = "#10b981"
+                tag_bg = "rgba(16, 185, 129, 0.15)"
+
+            aviso_config = "" if tem_config else "<div style='font-size:10px; color:#f59e0b;'>⚠️ Usando fechamento padrão (dia 20). Configure acima se diferente.</div>"
+
+            with col_target:
+                st.markdown(f"""
+                <div style="background: linear-gradient(145deg, #161922, #11131a); border: 1px solid #232734; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #232734; padding-bottom: 8px; margin-bottom: 10px;">
+                        <span style="font-size: 17px; font-weight: bold; color: #ffffff;">💳 {c_banco}</span>
+                        <span style="background: {tag_bg}; color: {tag_cor}; border: 1px solid {tag_cor}; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600;">
+                            {tag_status}
+                        </span>
+                    </div>
+                    {aviso_config}
+                    <div style="margin-top: 6px;">
+                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase;">Fatura a Pagar em {mes_selecionado}</div>
+                        <div style="font-size: 22px; font-weight: bold; color: #f43f5e; margin-top: 2px;">R$ {fatura_mes_total:,.2f}</div>
+                        <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Vence dia <b>{venc_dia:02d}</b></div>
+                    </div>
+                    <div style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed #232734;">
+                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase;">Já na Próxima Fatura</div>
+                        <div style="font-size: 18px; font-weight: bold; color: #38bdf8; margin-top: 2px;">R$ {val_prox_fatura:,.2f}</div>
+                        <div style="font-size: 10px; color: #94a3b8;">Compras a partir do dia {fech_dia:02d}</div>
+                    </div>
+                    <div style="margin-top: 8px; font-size: 11px; color: #10b981;">
+                        ⭐ <b>Melhor dia de compra:</b> Dia {fech_dia:02d} em diante
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.write("")
+
+        # GRÁFICOS COMPARATIVOS DOS CARTÕES
         col_g1, col_g2 = st.columns(2)
 
         with col_g1:
-            tot_por_cartao = df_cartoes.groupby("cartao_banco")["valor"].sum().reset_index()
-            tot_por_cartao = tot_por_cartao.sort_values(by="valor", ascending=False)
-
-            fig_bar_cartao = px.bar(
-                tot_por_cartao,
-                x="cartao_banco",
-                y="valor",
-                text=tot_por_cartao["valor"].map(lambda x: f"R$ {x:,.2f}"),
-                color="cartao_banco",
-                color_discrete_sequence=["#8b5cf6", "#ec4899", "#38bdf8", "#10b981", "#f59e0b"]
-            )
-            fig_bar_cartao.update_layout(
-                template="plotly_dark",
-                title="Total por Cartão / Banco",
-                height=320,
-                margin=dict(l=10, r=10, t=35, b=10),
-                xaxis_title="",
-                yaxis_title="Total (R$)",
-                showlegend=False
-            )
-            fig_bar_cartao.update_traces(textposition="outside")
-            st.plotly_chart(fig_bar_cartao, use_container_width=True)
+            tot_por_cartao = df_cartoes.groupby("cartao_banco")["valor"].sum().reset_index() if not df_cartoes.empty else pd.DataFrame(columns=["cartao_banco", "valor"])
+            if not tot_por_cartao.empty:
+                tot_por_cartao = tot_por_cartao.sort_values(by="valor", ascending=False)
+                fig_bar_cartao = px.bar(
+                    tot_por_cartao,
+                    x="cartao_banco",
+                    y="valor",
+                    text=tot_por_cartao["valor"].map(lambda x: f"R$ {x:,.2f}"),
+                    color="cartao_banco",
+                    color_discrete_sequence=["#8b5cf6", "#ec4899", "#38bdf8", "#10b981", "#f59e0b"]
+                )
+                fig_bar_cartao.update_layout(
+                    template="plotly_dark",
+                    title="Total Geral Comprado no Cartão este Mês",
+                    height=300,
+                    margin=dict(l=10, r=10, t=35, b=10),
+                    xaxis_title="",
+                    yaxis_title="Total (R$)",
+                    showlegend=False
+                )
+                fig_bar_cartao.update_traces(textposition="outside")
+                st.plotly_chart(fig_bar_cartao, use_container_width=True)
 
         with col_g2:
-            dia_cartao = df_cartoes.groupby("dia")["valor"].sum().reset_index()
-
-            fig_dia_cartao = go.Figure()
-            fig_dia_cartao.add_trace(go.Bar(
-                x=dia_cartao["dia"].map(lambda d: f"Dia {d:02d}"),
-                y=dia_cartao["valor"],
-                name="Gasto no Dia",
-                marker_color="#8b5cf6",
-                text=dia_cartao["valor"].map(lambda x: f"R$ {x:,.2f}"),
-                textposition="outside"
-            ))
-            fig_dia_cartao.add_hline(
-                y=media_dia_uso,
-                line_dash="dash",
-                line_color="#f59e0b",
-                annotation_text=f"Média: R$ {media_dia_uso:,.2f}",
-                annotation_position="top right"
-            )
-            fig_dia_cartao.update_layout(
-                template="plotly_dark",
-                title="Gastos no Cartão por Dia de Uso",
-                height=320,
-                margin=dict(l=10, r=10, t=35, b=10),
-                xaxis_title="",
-                yaxis_title="Reais (R$)",
-                showlegend=False
-            )
-            st.plotly_chart(fig_dia_cartao, use_container_width=True)
+            dia_cartao = df_cartoes.groupby("dia")["valor"].sum().reset_index() if not df_cartoes.empty else pd.DataFrame(columns=["dia", "valor"])
+            if not dia_cartao.empty:
+                media_dia_uso = dia_cartao["valor"].mean()
+                fig_dia_cartao = go.Figure()
+                fig_dia_cartao.add_trace(go.Bar(
+                    x=dia_cartao["dia"].map(lambda d: f"Dia {d:02d}"),
+                    y=dia_cartao["valor"],
+                    name="Gasto no Dia",
+                    marker_color="#8b5cf6",
+                    text=dia_cartao["valor"].map(lambda x: f"R$ {x:,.2f}"),
+                    textposition="outside"
+                ))
+                fig_dia_cartao.add_hline(
+                    y=media_dia_uso,
+                    line_dash="dash",
+                    line_color="#f59e0b",
+                    annotation_text=f"Média: R$ {media_dia_uso:,.2f}",
+                    annotation_position="top right"
+                )
+                fig_dia_cartao.update_layout(
+                    template="plotly_dark",
+                    title="Gastos no Cartão por Dia de Compra",
+                    height=300,
+                    margin=dict(l=10, r=10, t=35, b=10),
+                    xaxis_title="",
+                    yaxis_title="Reais (R$)",
+                    showlegend=False
+                )
+                st.plotly_chart(fig_dia_cartao, use_container_width=True)
     else:
-        st.info("💳 Nenhum gasto em cartão registrado neste mês ainda. Ao registrar compras no cartão, os comparativos aparecerão aqui!")
+        st.info("💳 Nenhum cartão registrado ainda. Configure os dias de fechamento acima ou realize um lançamento no cartão!")
 
 # =========================================================
 # TELA 2: CONFIGURAÇÃO DE RENDA, REGRAS & BACKUP (COM PDF)
@@ -862,7 +1002,7 @@ elif menu == "⚙️ Configurar Renda e Regras":
 
     st.divider()
 
-    # 4. EXPORTAÇÃO E BACKUP DOS DADOS (PDF & CSV / EXCEL)
+    # EXPORTAÇÃO E BACKUP DOS DADOS (PDF & CSV / EXCEL)
     st.subheader("📥 Exportação e Backup dos Dados (PDF & CSV / Excel)")
     st.caption("Baixe relatórios executivos formatados em PDF ou planilhas para backup:")
 
@@ -873,7 +1013,7 @@ elif menu == "⚙️ Configurar Renda e Regras":
     st.markdown("##### 📄 Relatórios Prontos em PDF")
 
     if not REPORTLAB_DISPONIVEL:
-        st.warning("⚠️ Para ativar a geração de relatórios em PDF, adicione a linha `reportlab` no arquivo `requirements.txt` do seu GitHub.")
+        st.warning("⚠️ Para ativar a geração de relatórios em PDF, certifique-se de que `reportlab` está presente no `requirements.txt` do seu GitHub.")
     else:
         col_pdf1, col_pdf2 = st.columns(2)
         with col_pdf1:
@@ -983,7 +1123,7 @@ elif menu == "💸 Lançar Gasto Diário":
         usados_f = [r[0] for r in cursor.fetchall()]
 
         bancos_padrao = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
-        lista_opcoes_cartao = sorted(list(set(bancos_padrao + usados_g + usados_f)))
+        lista_opcoes_cartao = sorted(list(set(bancos_padrao + usados_g + usados_f + list(cfgs_map.keys()))))
         lista_opcoes_cartao.append("✏️ Digitar outro banco / cartão...")
 
         cartao_escolhido = st.selectbox("Selecione o Cartão / Banco", lista_opcoes_cartao, key="gasto_cartao_sel")
@@ -991,6 +1131,14 @@ elif menu == "💸 Lançar Gasto Diário":
             cartao_banco_final = st.text_input("Escreva o nome do Cartão / Banco (ex: XP, Sicredi):", key="gasto_cartao_outro")
         else:
             cartao_banco_final = cartao_escolhido
+
+        # Feedback inteligente sobre a fatura
+        if cartao_banco_final in cfgs_map and "Crédito" in forma_pag:
+            fech_d, venc_d = cfgs_map[cartao_banco_final]
+            if int(dia_sel) >= fech_d:
+                st.info(f"💡 **Ciclo do Cartão:** Como este lançamento é no dia {int(dia_sel):02d} (a partir do dia de corte {fech_d:02d}), ele será cobrado na **fatura do próximo mês** (vencimento dia {venc_d:02d})!")
+            else:
+                st.caption(f"📌 Lançamento antes do fechamento (dia {fech_d:02d}). Entrará na fatura deste mês.")
 
     if st.button("Confirmar Despesa", type="primary", key="btn_conf_despesa"):
         categoria_final = cat_custom.strip() if ("Personalizar" in cat_sel and cat_custom.strip()) else cat_sel
@@ -1014,10 +1162,22 @@ elif menu == "💸 Lançar Gasto Diário":
     st.subheader("Histórico de Gastos Deste Mês")
     if not df_gastos.empty:
         df_exibir = df_gastos.copy()
-        df_exibir["Pagamento"] = df_exibir.apply(
-            lambda r: f"{r['forma_pagamento']} ({r['cartao_banco']})" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else r.get('forma_pagamento', '-'),
-            axis=1
-        )
+        
+        # Etiqueta de pagamento inteligente (indica se caiu na fatura atual ou próxima)
+        def tag_fatura_hist(r):
+            forma = str(r.get('forma_pagamento', 'PIX'))
+            cartao = str(r.get('cartao_banco', '')).strip() if pd.notna(r.get('cartao_banco')) else ''
+            if "Cartão" in forma and cartao:
+                if cartao in cfgs_map and "Crédito" in forma:
+                    dia_corte = cfgs_map[cartao][0]
+                    if int(r['dia']) >= dia_corte:
+                        return f"{forma} ({cartao}) ⏩ Próx. Fat."
+                    else:
+                        return f"{forma} ({cartao}) 📌 Fat. Atual"
+                return f"{forma} ({cartao})"
+            return forma
+
+        df_exibir["Pagamento"] = df_exibir.apply(tag_fatura_hist, axis=1)
         tabela_gastos = df_exibir[["dia", "descricao", "categoria", "Pagamento", "valor"]].copy()
         tabela_gastos.columns = ["Dia", "Descrição", "Categoria", "Forma de Pagamento", "Valor"]
 
@@ -1091,7 +1251,7 @@ elif menu == "📌 Gastos Fixos & Parcelas":
         usados_f = [r[0] for r in cursor.fetchall()]
 
         bancos_padrao = ["Nubank", "Inter", "Itaú", "Bradesco", "Santander", "C6 Bank", "Banco do Brasil", "Caixa"]
-        lista_opcoes_cartao_fix = sorted(list(set(bancos_padrao + usados_g + usados_f)))
+        lista_opcoes_cartao_fix = sorted(list(set(bancos_padrao + usados_g + usados_f + list(cfgs_map.keys()))))
         lista_opcoes_cartao_fix.append("✏️ Digitar outro banco / cartão...")
 
         f_cartao_escolhido = st.selectbox("Selecione o Cartão / Banco", lista_opcoes_cartao_fix, key="fixo_cartao_sel")
