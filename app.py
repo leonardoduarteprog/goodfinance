@@ -333,8 +333,21 @@ gastos_por_dia = df_gastos.groupby("dia")["valor"].sum().to_dict() if not df_gas
 total_gasto_real = df_gastos["valor"].sum() if not df_gastos.empty else 0.0
 saldo_restante_caixa = saldo_livre_mes - total_gasto_real
 
+hoje_dia = date.today().day
+mes_eh_atual = (ano_atual == date.today().year and mes_num == date.today().month)
+
+# --- CÁLCULO INTELIGENTE DO TETO DIÁRIO FIXO RESTANTE ---
+if mes_eh_atual:
+    dias_restantes = max(1, dias_no_mes - hoje_dia + 1)
+    teto_diario_restante = max(0.0, saldo_restante_caixa / dias_restantes)
+    teto_base_original = (saldo_livre_mes / dias_no_mes) if dias_no_mes > 0 else 0.0
+else:
+    dias_restantes = dias_no_mes
+    teto_diario_restante = (saldo_livre_mes / dias_no_mes) if dias_no_mes > 0 else 0.0
+    teto_base_original = teto_diario_restante
+
 # =========================================================
-# LÓGICA DE SIMULAÇÃO DIA A DIA
+# LÓGICA DE SIMULAÇÃO DIA A DIA (SEM CASCATA CONFUSA)
 # =========================================================
 dias_lista = []
 dias_numeros = []
@@ -345,39 +358,53 @@ cores_grafico = []
 
 dia_negativo = None
 saldo_acum_check = saldo_livre_mes
-hoje_dia = date.today().day
-mes_eh_atual = (ano_atual == date.today().year and mes_num == date.today().month)
 
 if modo_ajuste == "rebalancear":
-    saldo_remanescente = saldo_livre_mes
     for d in range(1, dias_no_mes + 1):
-        dias_a_frente = (dias_no_mes - d + 1)
-        teto_dia = max(0.0, saldo_remanescente / dias_a_frente) if dias_a_frente > 0 else 0.0
         gasto_dia = gastos_por_dia.get(d, 0.0)
-
         saldo_acum_check -= gasto_dia
         if saldo_acum_check < 0 and dia_negativo is None:
             dia_negativo = d
 
-        if gasto_dia > 0:
-            if gasto_dia > teto_dia:
-                cor = "vermelho"
-                hex_c = "#ef4444"
-            elif gasto_dia >= (teto_dia * 0.8):
-                cor = "amarelo"
-                hex_c = "#f59e0b"
+        if mes_eh_atual:
+            if d < hoje_dia:
+                teto_dia = teto_base_original
+                if gasto_dia > 0:
+                    if gasto_dia > teto_dia:
+                        cor = "vermelho"; hex_c = "#ef4444"
+                    elif gasto_dia >= (teto_dia * 0.8):
+                        cor = "amarelo"; hex_c = "#f59e0b"
+                    else:
+                        cor = "verde"; hex_c = "#10b981"
+                else:
+                    cor = "verde"; hex_c = "#10b981"
             else:
-                cor = "verde"
-                hex_c = "#10b981"
+                teto_dia = teto_diario_restante
+                if gasto_dia > 0:
+                    if gasto_dia > teto_dia:
+                        cor = "vermelho"; hex_c = "#ef4444"
+                    elif gasto_dia >= (teto_dia * 0.8):
+                        cor = "amarelo"; hex_c = "#f59e0b"
+                    else:
+                        cor = "verde"; hex_c = "#10b981"
+                else:
+                    if saldo_restante_caixa <= 0:
+                        cor = "vermelho"; hex_c = "#ef4444"
+                    elif d == hoje_dia:
+                        cor = "neutro"; hex_c = "#38bdf8"
+                    else:
+                        cor = "neutro"; hex_c = "rgba(100, 116, 139, 0.25)"
         else:
-            if saldo_remanescente <= 0:
-                cor = "vermelho"
-                hex_c = "#ef4444"
+            teto_dia = teto_base_original
+            if gasto_dia > 0:
+                if gasto_dia > teto_dia:
+                    cor = "vermelho"; hex_c = "#ef4444"
+                elif gasto_dia >= (teto_dia * 0.8):
+                    cor = "amarelo"; hex_c = "#f59e0b"
+                else:
+                    cor = "verde"; hex_c = "#10b981"
             else:
-                cor = "neutro"
-                hex_c = "rgba(100, 116, 139, 0.25)"
-
-        saldo_remanescente -= gasto_dia
+                cor = "neutro"; hex_c = "rgba(100, 116, 139, 0.25)"
 
         tag_hoje = " 📍 (Hoje)" if (mes_eh_atual and d == hoje_dia) else ""
         dias_lista.append(f"Dia {d:02d}{tag_hoje}")
@@ -388,12 +415,10 @@ if modo_ajuste == "rebalancear":
         cores_grafico.append(hex_c)
 
 else:
-    teto_base_fixo = saldo_livre_mes / dias_no_mes if dias_no_mes > 0 else 0.0
     saldo_acumulado = saldo_livre_mes
-
     for d in range(1, dias_no_mes + 1):
         gasto_dia = gastos_por_dia.get(d, 0.0)
-        teto_dia = teto_base_fixo if saldo_acumulado >= teto_base_fixo else max(0.0, saldo_acumulado)
+        teto_dia = teto_base_original if saldo_acumulado >= teto_base_original else max(0.0, saldo_acumulado)
 
         saldo_acum_check -= gasto_dia
         if saldo_acum_check < 0 and dia_negativo is None:
@@ -402,22 +427,17 @@ else:
         saldo_acumulado -= gasto_dia
 
         if gasto_dia > 0:
-            if gasto_dia > teto_base_fixo:
-                cor = "vermelho"
-                hex_c = "#ef4444"
-            elif gasto_dia >= (teto_base_fixo * 0.8):
-                cor = "amarelo"
-                hex_c = "#f59e0b"
+            if gasto_dia > teto_base_original:
+                cor = "vermelho"; hex_c = "#ef4444"
+            elif gasto_dia >= (teto_base_original * 0.8):
+                cor = "amarelo"; hex_c = "#f59e0b"
             else:
-                cor = "verde"
-                hex_c = "#10b981"
+                cor = "verde"; hex_c = "#10b981"
         else:
             if teto_dia <= 0.0:
-                cor = "vermelho"
-                hex_c = "#ef4444"
+                cor = "vermelho"; hex_c = "#ef4444"
             else:
-                cor = "neutro"
-                hex_c = "rgba(100, 116, 139, 0.25)"
+                cor = "neutro"; hex_c = "rgba(100, 116, 139, 0.25)"
 
         tag_hoje = " 📍 (Hoje)" if (mes_eh_atual and d == hoje_dia) else ""
         dias_lista.append(f"Dia {d:02d}{tag_hoje}")
@@ -453,7 +473,7 @@ if menu == "📊 Calendário e Gráfico Diário":
         with col_q1:
             q_dia = st.number_input("Dia", min_value=1, max_value=dias_no_mes, value=min(date.today().day, dias_no_mes), step=1, key="q_dia")
         with col_q2:
-            q_cat = st.selectbox("Categoria", ["🍔 Alimentação", "🚗 Transporte", "🛒 Supermercado", "🍿 Lazer", "💊 Saúde", "🏠 Moradia / Contas", "✏️️ Outra / Personalizar"], key="q_cat")
+            q_cat = st.selectbox("Categoria", ["🍔 Alimentação", "🚗 Transporte", "🛒 Supermercado", "🍿 Lazer", "💊 Saúde", "🏠 Moradia / Contas", "✏️ Outra / Personalizar"], key="q_cat")
         with col_q3:
             q_forma = st.selectbox("Pagamento", ["PIX", "Cartão de Crédito", "Cartão de Débito", "Dinheiro"], key="q_forma")
 
@@ -476,9 +496,9 @@ if menu == "📊 Calendário e Gráfico Diário":
             if q_cartao in cfgs_map and "Crédito" in q_forma:
                 c_fech, c_venc = cfgs_map[q_cartao]
                 if int(q_dia) >= c_fech:
-                    st.info(f"💡 **Melhor compra:** Como o gasto é a partir do dia {c_fech:02d}, ele entrará na **fatura do próximo mês** (vencimento dia {c_venc:02d})!")
+                    st.info(f"💡 **Melhor compra:** Como o gasto é a partir do dia {c_fech:02d}, entrará na **fatura do próximo mês** (vencimento dia {c_venc:02d})!")
                 else:
-                    st.caption(f"📌 Compra realizada antes do fechamento (dia {c_fech:02d}). Ela entra na **fatura deste mês**.")
+                    st.caption(f"📌 Compra realizada antes do fechamento (dia {c_fech:02d}). Entrará na **fatura deste mês**.")
 
         col_qd, col_qv = st.columns([2, 1])
         with col_qd:
@@ -505,19 +525,22 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.write("")
 
-    # CARDS PRINCIPAIS 100% NATIVOS (SEM CÓDIGO VAZANDO)
+    # CARDS PRINCIPAIS 100% NATIVOS (COM META DIÁRIA RESTANTE CLARA)
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Orçamento Livre Inicial", f"R$ {saldo_livre_mes:,.2f}")
     col2.metric("Total Gasto Até Agora", f"R$ {total_gasto_real:,.2f}")
     col3.metric("Saldo Disponível em Caixa", f"R$ {saldo_restante_caixa:,.2f}")
-    regra_nome = "Rebalanceamento" if modo_ajuste == "rebalancear" else "Corte no Fim"
-    col4.metric("Regra de Ajuste", regra_nome)
+    col4.metric(
+        "Teto Fixo / Dia Restante",
+        f"R$ {teto_diario_restante:,.2f}",
+        help=f"Saldo em caixa dividido igualmente pelos {dias_restantes} dias restantes no mês"
+    )
 
     # AVISOS DE SALDO NATIVOS
     if dia_negativo:
         st.error(f"🚨 **Atenção:** Seu saldo livre ficou negativo no **Dia {dia_negativo:02d}**! Você já gastou mais do que o planejado para o mês. Saldo restante atual: **R$ {saldo_restante_caixa:,.2f}**.")
     else:
-        st.success(f"✅ **Dentro do planejado:** Você ainda possui **R$ {saldo_restante_caixa:,.2f}** livres para gastar até o final de {mes_selecionado}.")
+        st.success(f"✅ **Dentro do planejado:** Você possui **R$ {saldo_restante_caixa:,.2f}** em caixa. Dividindo igualmente até o final do mês, você pode gastar até **R$ {teto_diario_restante:,.2f} por dia** ({dias_restantes} dias restantes).")
 
     st.write("")
 
@@ -582,7 +605,7 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.write("")
 
-    # 3. DISTRIBUIÇÃO POR CATEGORIAS & TOP 3 GASTOS NATIVOS
+    # 3. DISTRIBUIÇÃO POR CATEGORIAS & TOP 3 GASTOS
     st.subheader("🍩 Distribuição por Categorias & Top 3 Maiores Gastos")
     col_cat1, col_cat2 = st.columns([1.2, 1])
 
@@ -721,21 +744,18 @@ if menu == "📊 Calendário e Gráfico Diário":
             fech_dia, venc_dia = cfgs_map.get(c_banco, (20, 27))
             tem_config = c_banco in cfgs_map
 
-            # 1. Compras do mês anterior pós-fechamento
             cursor.execute("""
                 SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
                 WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia >= ?
             """, (prev_ano, prev_mes, c_banco, fech_dia))
             val_prev_pos = cursor.fetchone()[0]
 
-            # 2. Compras deste mês pré-fechamento
             cursor.execute("""
                 SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
                 WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia < ?
             """, (ano_atual, mes_num, c_banco, fech_dia))
             val_curr_pre = cursor.fetchone()[0]
 
-            # 3. Parcelas fixas neste cartão
             cursor.execute("""
                 SELECT COALESCE(SUM(valor), 0.0) FROM despesas_fixas 
                 WHERE cartao_banco = ? AND forma_pagamento LIKE '%Crédito%'
@@ -744,7 +764,6 @@ if menu == "📊 Calendário e Gráfico Diário":
 
             fatura_mes_total = val_prev_pos + val_curr_pre + val_fixos_cart
 
-            # 4. Compras deste mês pós-fechamento
             cursor.execute("""
                 SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
                 WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia >= ?
@@ -1137,199 +1156,3 @@ elif menu == "📌 Gastos Fixos & Parcelas":
     if st.button("Salvar Despesa Fixa", type="primary", key="btn_salvar_fixo"):
         if f_nome.strip() == "":
             st.warning("Preencha o nome da conta.")
-        elif "Cartão" in f_forma_pag and f_cartao_banco_final.strip() == "":
-            st.warning("Por favor, informe qual cartão foi utilizado.")
-        else:
-            tipo_bd = "Parcela" if "Parcelamento" in f_tipo else "Fixo"
-            cursor.execute("""
-                INSERT INTO despesas_fixas (descricao, valor, tipo, parcela_atual, total_parcelas, forma_pagamento, cartao_banco)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (f_nome, f_val, tipo_bd, int(p_at), int(p_tot), f_forma_pag, f_cartao_banco_final.strip()))
-            conn.commit()
-            st.success("Conta fixa cadastrada com sucesso!")
-            st.rerun()
-
-    st.divider()
-
-    st.subheader("Contas Fixas e Parcelas Cadastradas")
-    if not df_fixos.empty:
-        df_mostrar_fixos = df_fixos.copy()
-        df_mostrar_fixos["Parcelas"] = df_mostrar_fixos.apply(
-            lambda r: f"{int(r['parcela_atual'])} / {int(r['total_parcelas'])}" if r["tipo"] == "Parcela" else "Contínuo",
-            axis=1
-        )
-        df_mostrar_fixos["Pagamento"] = df_mostrar_fixos.apply(
-            lambda r: f"{r['forma_pagamento']} ({r['cartao_banco']})" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else r.get('forma_pagamento', '-'),
-            axis=1
-        )
-        tabela_fixos = df_mostrar_fixos[["descricao", "tipo", "valor", "Parcelas", "Pagamento"]].copy()
-        tabela_fixos.columns = ["Descrição", "Tipo", "Valor Mensal", "Parcelas", "Forma de Pagamento"]
-
-        st.dataframe(
-            tabela_fixos.style.format({"Valor Mensal": "R$ {:,.2f}"}),
-            use_container_width=True,
-            hide_index=True
-        )
-
-        st.markdown("#### 🗑 Cancelar / Excluir Despesa Lançada Errada")
-        st.caption("Selecione um item que você lançou por engano ou que deseja encerrar:")
-
-        opcoes_fixos_excluir = {
-            f"{r['descricao']} ({r['tipo']}) — R$ {r['valor']:,.2f}" +
-            (f" [{int(r['parcela_atual'])}/{int(r['total_parcelas'])}]" if r['tipo'] == 'Parcela' else "") +
-            (f" [{r['cartao_banco']}]" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else "") +
-            f" (Cód #{r['id']})": int(r['id'])
-            for _, r in df_fixos.iterrows()
-        }
-
-        item_fixo_sel = st.selectbox(
-            "Selecione a conta para apagar:",
-            options=list(opcoes_fixos_excluir.keys()),
-            key="select_apagar_fixo"
-        )
-
-        if st.button("Cancelar / Apagar Esta Despesa", type="secondary"):
-            id_para_remover = opcoes_fixos_excluir[item_fixo_sel]
-            cursor.execute("DELETE FROM despesas_fixas WHERE id = ?", (id_para_remover,))
-            conn.commit()
-            st.success("Conta removida com sucesso! O orçamento livre foi recalculado.")
-            st.rerun()
-    else:
-        st.info("Nenhuma despesa fixa ou parcelamento cadastrado no momento.")
-
-# =========================================================
-# TELA 5: PATRIMÔNIO & PROJEÇÃO
-# =========================================================
-elif menu == "💰 Patrimônio":
-    st.title("Gestão de Patrimônio e Projeção de Reserva")
-
-    cursor.execute("SELECT saldo_inicial FROM patrimonio_base WHERE id = 1")
-    row_base = cursor.fetchone()
-    patrimonio_inicial = row_base[0] if row_base else 0.0
-
-    df_aportes = pd.read_sql_query("SELECT ano, mes, valor, data_consolidacao FROM aportes_consolidados", conn)
-    total_aportado_historico = df_aportes["valor"].sum() if not df_aportes.empty else 0.0
-    patrimonio_atual_total = patrimonio_inicial + total_aportado_historico
-
-    cursor.execute("SELECT valor FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
-    row_aporte_mes = cursor.fetchone()
-    aporte_consolidado_mes = row_aporte_mes[0] if row_aporte_mes else None
-
-    # MÉTRICAS 100% NATIVAS
-    c_p1, c_p2, c_p3 = st.columns(3)
-    c_p1.metric("Patrimônio Atual Consolidado", f"R$ {patrimonio_atual_total:,.2f}")
-    c_p2.metric("Patrimônio Inicial Declarado", f"R$ {patrimonio_inicial:,.2f}")
-    c_p3.metric("Total Poupado & Consolidado", f"R$ {total_aportado_historico:,.2f}")
-
-    st.divider()
-
-    st.subheader("1. Definir Patrimônio Inicial")
-    st.caption("Informe quanto você já tem guardado/investido hoje (deixe 0 se estiver começando do zero):")
-
-    with st.form("form_patrimonio_base"):
-        novo_inicial = st.number_input(
-            "Patrimônio Inicial (R$)",
-            min_value=0.0,
-            value=float(patrimonio_inicial),
-            step=100.0
-        )
-        if st.form_submit_button("Atualizar Patrimônio Inicial"):
-            cursor.execute("UPDATE patrimonio_base SET saldo_inicial = ? WHERE id = 1", (novo_inicial,))
-            conn.commit()
-            st.success("Patrimônio inicial atualizado com sucesso!")
-            st.rerun()
-
-    st.divider()
-
-    st.subheader(f"2. Fechamento de {mes_selecionado}/{ano_atual}")
-    st.caption("Ao finalizar o mês, transfira o que você realmente conseguiu poupar para somar ao seu patrimônio:")
-
-    if aporte_consolidado_mes is not None:
-        st.info(f"✅ O mês de **{mes_selecionado}/{ano_atual}** já foi consolidado com um aporte de **R$ {aporte_consolidado_mes:,.2f}** no patrimônio.")
-        if st.button("Desfazer / Remover Consolidação deste Mês"):
-            cursor.execute("DELETE FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
-            conn.commit()
-            st.success("Consolidação removida.")
-            st.rerun()
-    else:
-        with st.form("form_consolidar_mes"):
-            sugestao_poupanca = float(meta_poupanca)
-            valor_consolidar = st.number_input(
-                f"Valor poupado em {mes_selecionado}/{ano_atual} a adicionar ao patrimônio (R$)",
-                min_value=0.0,
-                value=sugestao_poupanca,
-                step=50.0
-            )
-            if st.form_submit_button("Confirmar e Somar ao Patrimônio"):
-                data_hoje_str = str(date.today())
-                cursor.execute("""
-                    INSERT INTO aportes_consolidados (ano, mes, valor, data_consolidacao)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(ano, mes) DO UPDATE SET valor = excluded.valor, data_consolidacao = excluded.data_consolidacao
-                """, (ano_atual, mes_num, valor_consolidar, data_hoje_str))
-                conn.commit()
-                st.success(f"Excelente! R$ {valor_consolidar:,.2f} adicionados ao seu patrimônio!")
-                st.rerun()
-
-    st.divider()
-
-    st.subheader(f"3. Projeção Patrimonial — Ano de {ano_atual}")
-    st.caption(f"Previsão mês a mês somando o patrimônio inicial com aportes realizados e projetados (Meta base: R$ {meta_poupanca:,.2f}/mês):")
-
-    aportes_ano_map = {}
-    if not df_aportes.empty:
-        df_ano_atual = df_aportes[df_aportes["ano"] == ano_atual]
-        aportes_ano_map = dict(zip(df_ano_atual["mes"], df_ano_atual["valor"]))
-
-    acumulado_proj = patrimonio_inicial
-    dados_proj = []
-
-    for m_i, m_n in enumerate(meses_nomes, start=1):
-        if m_i in aportes_ano_map:
-            val_aporte = aportes_ano_map[m_i]
-            tipo_status = "✅ Consolidado"
-        else:
-            val_aporte = meta_poupanca
-            tipo_status = "🔮 Projetado"
-
-        acumulado_proj += val_aporte
-        dados_proj.append({
-            "Mês": m_n,
-            "m_num": m_i,
-            "Situação": tipo_status,
-            "Poupança / Aporte (R$)": val_aporte,
-            "Patrimônio Acumulado (R$)": acumulado_proj
-        })
-
-    df_proj_tabela = pd.DataFrame(dados_proj)
-
-    fig_proj = go.Figure()
-    fig_proj.add_trace(go.Scatter(
-        x=df_proj_tabela["Mês"],
-        y=df_proj_tabela["Patrimônio Acumulado (R$)"],
-        mode="lines+markers",
-        name="Patrimônio Total",
-        line=dict(color="#10b981", width=3),
-        marker=dict(size=7, color="#38bdf8")
-    ))
-
-    fig_proj.update_layout(
-        template="plotly_dark",
-        height=320,
-        margin=dict(l=10, r=10, t=20, b=10),
-        xaxis=dict(title="Mês"),
-        yaxis=dict(title="Patrimônio Acumulado (R$)")
-    )
-    st.plotly_chart(fig_proj, use_container_width=True)
-
-    st.dataframe(
-        df_proj_tabela[["Mês", "Situação", "Poupança / Aporte (R$)", "Patrimônio Acumulado (R$)"]].style.format({
-            "Poupança / Aporte (R$)": "R$ {:,.2f}",
-            "Patrimônio Acumulado (R$)": "R$ {:,.2f}"
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    patrimonio_fim_ano = df_proj_tabela.iloc[-1]["Patrimônio Acumulado (R$)"]
-    st.success(f"🎯 **Projeção Final de {ano_atual}:** Mantendo sua meta de poupança, você fechará o ano com **R$ {patrimonio_fim_ano:,.2f}** acumulados!")
