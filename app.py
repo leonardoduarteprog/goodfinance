@@ -329,9 +329,23 @@ cfgs_map = {r["cartao_banco"]: (int(r["dia_fechamento"]), int(r["dia_vencimento"
 
 cursor.execute("SELECT renda, poupanca, modo_ajuste FROM metas_mensais WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
 config_row = cursor.fetchone()
-renda_mensal = config_row[0] if config_row else 10000.0
-meta_poupanca = config_row[1] if config_row else 1500.0
-modo_ajuste = config_row[2] if (config_row and config_row[2]) else "rebalancear"
+
+if config_row:
+    renda_mensal = config_row[0]
+    meta_poupanca = config_row[1]
+    modo_ajuste = config_row[2] if config_row[2] else "rebalancear"
+else:
+    # Se o mês ainda não foi configurado, busca o último mês salvo para não usar valores fictícios
+    cursor.execute("SELECT renda, poupanca, modo_ajuste FROM metas_mensais ORDER BY ano DESC, mes DESC LIMIT 1")
+    ultimo_salvo = cursor.fetchone()
+    if ultimo_salvo:
+        renda_mensal = ultimo_salvo[0]
+        meta_poupanca = ultimo_salvo[1]
+        modo_ajuste = ultimo_salvo[2] if ultimo_salvo[2] else "rebalancear"
+    else:
+        renda_mensal = 0.0
+        meta_poupanca = 0.0
+        modo_ajuste = "rebalancear"
 
 df_fixos = pd.read_sql_query("SELECT id, descricao, valor, tipo, parcela_atual, total_parcelas, forma_pagamento, cartao_banco FROM despesas_fixas", conn)
 total_fixos = df_fixos["valor"].sum() if not df_fixos.empty else 0.0
