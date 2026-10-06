@@ -199,70 +199,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILIZAÇÃO CSS (Dark UI & Banners) ---
-st.markdown("""
-<style>
-    .stApp {
-        background-color: #0b0d13;
-        color: #f1f5f9;
-        font-family: 'Segoe UI', Tahoma, sans-serif;
-    }
-    .metric-card {
-        background: linear-gradient(145deg, #161922, #11131a);
-        border: 1px solid #232734;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 10px;
-    }
-    .metric-label {
-        color: #94a3b8;
-        font-size: 11px;
-        text-transform: uppercase;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
-    .metric-num {
-        color: #ffffff;
-        font-size: 22px;
-        font-weight: bold;
-        margin-top: 4px;
-    }
-    .danger-box {
-        background: rgba(239, 68, 68, 0.15);
-        border-left: 4px solid #ef4444;
-        padding: 12px 16px;
-        border-radius: 6px;
-        color: #fca5a5;
-        margin: 12px 0;
-        font-size: 14px;
-    }
-    .success-box {
-        background: rgba(16, 185, 129, 0.15);
-        border-left: 4px solid #10b981;
-        padding: 12px 16px;
-        border-radius: 6px;
-        color: #6ee7b7;
-        margin: 12px 0;
-        font-size: 14px;
-    }
-    .top-item-box {
-        background: #161922;
-        border: 1px solid #232734;
-        padding: 10px 14px;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # --- BANCO DE DADOS (SQLite) ---
 conn = sqlite3.connect("orcamento.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Metas mensais
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS metas_mensais (
     ano INTEGER,
@@ -280,7 +220,6 @@ try:
 except sqlite3.OperationalError:
     pass
 
-# Despesas fixas e parcelas
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS despesas_fixas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,7 +238,6 @@ for col_def in [("forma_pagamento", "TEXT DEFAULT 'Boleto / Débito'"), ("cartao
     except sqlite3.OperationalError:
         pass
 
-# Gastos diários
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS gastos_diarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -319,7 +257,6 @@ for col_def in [("forma_pagamento", "TEXT DEFAULT 'PIX'"), ("cartao_banco", "TEX
     except sqlite3.OperationalError:
         pass
 
-# Configuração dos Cartões (Fechamento e Vencimento)
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS cartoes_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -329,7 +266,6 @@ CREATE TABLE IF NOT EXISTS cartoes_config (
 )
 """)
 
-# Patrimônio
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS patrimonio_base (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -374,11 +310,10 @@ menu = st.sidebar.radio(
     ]
 )
 
-# --- MAPA DE CONFIGURAÇÃO DE CARTÕES (FECHAMENTO / VENCIMENTO) ---
+# --- MAPA DE CONFIGURAÇÃO DE CARTÕES ---
 df_cfg_cartoes = pd.read_sql_query("SELECT cartao_banco, dia_fechamento, dia_vencimento FROM cartoes_config", conn)
 cfgs_map = {r["cartao_banco"]: (int(r["dia_fechamento"]), int(r["dia_vencimento"])) for _, r in df_cfg_cartoes.iterrows()}
 
-# --- RECUPERAÇÃO DE CONFIGURAÇÕES ---
 cursor.execute("SELECT renda, poupanca, modo_ajuste FROM metas_mensais WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
 config_row = cursor.fetchone()
 renda_mensal = config_row[0] if config_row else 10000.0
@@ -390,7 +325,6 @@ total_fixos = df_fixos["valor"].sum() if not df_fixos.empty else 0.0
 
 saldo_livre_mes = max(0.0, renda_mensal - meta_poupanca - total_fixos)
 
-# Consulta de gastos diários
 df_gastos = pd.read_sql_query(
     "SELECT id, dia, descricao, categoria, valor, forma_pagamento, cartao_banco FROM gastos_diarios WHERE ano = ? AND mes = ? ORDER BY dia ASC, id ASC",
     conn, params=(ano_atual, mes_num)
@@ -519,7 +453,7 @@ if menu == "📊 Calendário e Gráfico Diário":
         with col_q1:
             q_dia = st.number_input("Dia", min_value=1, max_value=dias_no_mes, value=min(date.today().day, dias_no_mes), step=1, key="q_dia")
         with col_q2:
-            q_cat = st.selectbox("Categoria", ["🍔 Alimentação", "🚗 Transporte", "🛒 Supermercado", "🍿 Lazer", "💊 Saúde", "🏠 Moradia / Contas", "✏️ Outra / Personalizar"], key="q_cat")
+            q_cat = st.selectbox("Categoria", ["🍔 Alimentação", "🚗 Transporte", "🛒 Supermercado", "🍿 Lazer", "💊 Saúde", "🏠 Moradia / Contas", "✏️️ Outra / Personalizar"], key="q_cat")
         with col_q3:
             q_forma = st.selectbox("Pagamento", ["PIX", "Cartão de Crédito", "Cartão de Débito", "Dinheiro"], key="q_forma")
 
@@ -539,13 +473,12 @@ if menu == "📊 Calendário e Gráfico Diário":
             else:
                 q_cartao = sel_q_cart
 
-            # Feedback de fechamento imediato
             if q_cartao in cfgs_map and "Crédito" in q_forma:
                 c_fech, c_venc = cfgs_map[q_cartao]
                 if int(q_dia) >= c_fech:
-                    st.info(f"💡 **Melhor compra:** Como o gasto é no/após o dia {c_fech}, ele entrará na **fatura do próximo mês** (vencimento dia {c_venc:02d})!")
+                    st.info(f"💡 **Melhor compra:** Como o gasto é a partir do dia {c_fech:02d}, ele entrará na **fatura do próximo mês** (vencimento dia {c_venc:02d})!")
                 else:
-                    st.caption(f"📌 Compra realizada antes do fechamento (dia {c_fech}). Ela entra na **fatura deste mês**.")
+                    st.caption(f"📌 Compra realizada antes do fechamento (dia {c_fech:02d}). Ela entra na **fatura deste mês**.")
 
         col_qd, col_qv = st.columns([2, 1])
         with col_qd:
@@ -572,52 +505,21 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.write("")
 
-    # CARDS PRINCIPAIS
+    # CARDS PRINCIPAIS 100% NATIVOS (SEM CÓDIGO VAZANDO)
     col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid #3b82f6;">
-            <div class="metric-label">Orçamento Livre Inicial</div>
-            <div class="metric-num">R$ {saldo_livre_mes:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid #f43f5e;">
-            <div class="metric-label">Total Gasto Até Agora</div>
-            <div class="metric-num">R$ {total_gasto_real:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col3:
-        cor_cx = "#10b981" if saldo_restante_caixa >= 0 else "#ef4444"
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid {cor_cx};">
-            <div class="metric-label">Saldo Disponível em Caixa</div>
-            <div class="metric-num">R$ {saldo_restante_caixa:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col4:
-        regra_nome = "Rebalanceamento" if modo_ajuste == "rebalancear" else "Corte no Fim"
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
-            <div class="metric-label">Regra de Ajuste</div>
-            <div class="metric-num" style="font-size: 16px; margin-top: 8px;">{regra_nome}</div>
-        </div>
-        """, unsafe_allow_html=True)
+    col1.metric("Orçamento Livre Inicial", f"R$ {saldo_livre_mes:,.2f}")
+    col2.metric("Total Gasto Até Agora", f"R$ {total_gasto_real:,.2f}")
+    col3.metric("Saldo Disponível em Caixa", f"R$ {saldo_restante_caixa:,.2f}")
+    regra_nome = "Rebalanceamento" if modo_ajuste == "rebalancear" else "Corte no Fim"
+    col4.metric("Regra de Ajuste", regra_nome)
 
+    # AVISOS DE SALDO NATIVOS
     if dia_negativo:
-        st.markdown(f"""
-        <div class="danger-box">
-            🚨 <b>Atenção:</b> Seu saldo livre ficou negativo no <b>Dia {dia_negativo:02d}</b>! 
-            Você já gastou mais do que o planejado para o mês. Saldo restante atual: <b>R$ {saldo_restante_caixa:,.2f}</b>.
-        </div>
-        """, unsafe_allow_html=True)
+        st.error(f"🚨 **Atenção:** Seu saldo livre ficou negativo no **Dia {dia_negativo:02d}**! Você já gastou mais do que o planejado para o mês. Saldo restante atual: **R$ {saldo_restante_caixa:,.2f}**.")
     else:
-        st.markdown(f"""
-        <div class="success-box">
-            ✅ <b>Dentro do planejado:</b> Você ainda possui <b>R$ {saldo_restante_caixa:,.2f}</b> livres para gastar até o final de {mes_selecionado}.
-        </div>
-        """, unsafe_allow_html=True)
+        st.success(f"✅ **Dentro do planejado:** Você ainda possui **R$ {saldo_restante_caixa:,.2f}** livres para gastar até o final de {mes_selecionado}.")
+
+    st.write("")
 
     # 2. GRÁFICO DIÁRIO COMPARATIVO
     st.subheader("📊 Comparativo Diário: Teto Permitido vs. Gasto Real")
@@ -680,7 +582,7 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.write("")
 
-    # 3. DISTRIBUIÇÃO POR CATEGORIAS & TOP 3 GASTOS
+    # 3. DISTRIBUIÇÃO POR CATEGORIAS & TOP 3 GASTOS NATIVOS
     st.subheader("🍩 Distribuição por Categorias & Top 3 Maiores Gastos")
     col_cat1, col_cat2 = st.columns([1.2, 1])
 
@@ -710,16 +612,11 @@ if menu == "📊 Calendário e Gráfico Diário":
             df_top3 = df_gastos.sort_values(by="valor", ascending=False).head(3)
             for idx, r_top in df_top3.iterrows():
                 pag_txt = f"{r_top['forma_pagamento']} ({r_top['cartao_banco']})" if (pd.notna(r_top.get('cartao_banco')) and str(r_top.get('cartao_banco')).strip() != '') else r_top.get('forma_pagamento', '')
-                st.markdown(f"""
-                <div class="top-item-box">
-                    <div>
-                        <span style="background:#232734; color:#38bdf8; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold;">Dia {int(r_top['dia']):02d}</span>
-                        <b style="margin-left:6px; font-size:14px;">{r_top['descricao']}</b>
-                        <div style="font-size:11px; color:#94a3b8; margin-top:2px;">{r_top['categoria']} • {pag_txt}</div>
-                    </div>
-                    <span style="color:#f43f5e; font-weight:bold; font-size:15px;">R$ {r_top['valor']:,.2f}</span>
-                </div>
-                """, unsafe_allow_html=True)
+                with st.container(border=True):
+                    c_t1, c_t2 = st.columns([2, 1])
+                    c_t1.write(f"📅 **Dia {int(r_top['dia']):02d}** — {r_top['descricao']}")
+                    c_t1.caption(f"{r_top['categoria']} • {pag_txt}")
+                    c_t2.subheader(f":red[R$ {r_top['valor']:,.2f}]")
         else:
             st.caption("Ao registrar despesas, as maiores do mês aparecerão aqui.")
 
@@ -749,10 +646,9 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.divider()
 
-    # --- SEÇÃO INTELIGENTE DE CARTÕES COM DIA DE FECHAMENTO ---
+    # --- SEÇÃO INTELIGENTE DE CARTÕES COM STREAMLIT NATIVO ---
     st.subheader("💳 Raio-X dos Cartões & Faturas")
 
-    # EXPANDER: CONFIGURAR FECHAMENTO E VENCIMENTO DOS CARTÕES
     with st.expander("⚙️ Configurar Fechamento e Vencimento das Faturas", expanded=False):
         st.write("Defina o dia em que a fatura fecha (corte) e o dia em que vence para cada cartão:")
         
@@ -792,7 +688,6 @@ if menu == "📊 Calendário e Gráfico Diário":
                 st.success(f"Regra da fatura do '{nome_cart_final.strip()}' salva com sucesso!")
                 st.rerun()
 
-        # Lista rápida de cartões configurados
         if not df_cfg_cartoes.empty:
             st.markdown("###### Cartões com Fechamento Salvo:")
             st.dataframe(
@@ -810,16 +705,13 @@ if menu == "📊 Calendário e Gráfico Diário":
     # APRESENTAÇÃO DOS CARTÕES ATIVOS NO MÊS
     df_cartoes = df_gastos[df_gastos["forma_pagamento"].str.contains("Cartão", na=False)].copy()
 
-    # Identificar todos os cartões que tiveram movimentação ou parcelas
     cartoes_no_mes = sorted(list(set(df_cartoes["cartao_banco"].dropna().tolist() + [r['cartao_banco'] for _, r in df_fixos[df_fixos['forma_pagamento'].str.contains('Cartão', na=False)].iterrows() if r.get('cartao_banco')])))
     cartoes_no_mes = [c for c in cartoes_no_mes if str(c).strip() != '']
 
-    # Se não houver cartões com despesa mas houver cartões configurados, lista os configurados
     if not cartoes_no_mes and cfgs_map:
         cartoes_no_mes = list(cfgs_map.keys())
 
     if cartoes_no_mes:
-        # Meses anterior para cálculo do ciclo
         prev_mes = 12 if mes_num == 1 else mes_num - 1
         prev_ano = ano_atual - 1 if mes_num == 1 else ano_atual
 
@@ -850,58 +742,45 @@ if menu == "📊 Calendário e Gráfico Diário":
             """, (c_banco,))
             val_fixos_cart = cursor.fetchone()[0]
 
-            # Fatura a pagar no mês
             fatura_mes_total = val_prev_pos + val_curr_pre + val_fixos_cart
 
-            # 4. Compras deste mês pós-fechamento (jogadas para o próximo mês)
+            # 4. Compras deste mês pós-fechamento
             cursor.execute("""
                 SELECT COALESCE(SUM(valor), 0.0) FROM gastos_diarios 
                 WHERE ano = ? AND mes = ? AND cartao_banco = ? AND forma_pagamento LIKE '%Crédito%' AND dia >= ?
             """, (ano_atual, mes_num, c_banco, fech_dia))
             val_prox_fatura = cursor.fetchone()[0]
 
-            # Status de fechamento
             if mes_eh_atual:
                 fatura_fechada = hoje_dia >= fech_dia
             else:
                 fatura_fechada = (ano_atual < date.today().year) or (ano_atual == date.today().year and mes_num < date.today().month)
 
-            if fatura_fechada:
-                tag_status = f"🔒 Fatura Fechada (Vence dia {venc_dia:02d})"
-                tag_cor = "#ef4444"
-                tag_bg = "rgba(239, 68, 68, 0.15)"
-            else:
-                tag_status = f"🟢 Fatura Aberta (Fecha dia {fech_dia:02d})"
-                tag_cor = "#10b981"
-                tag_bg = "rgba(16, 185, 129, 0.15)"
-
-            aviso_config = "" if tem_config else "<div style='font-size:10px; color:#f59e0b;'>⚠️ Usando fechamento padrão (dia 20). Configure acima se diferente.</div>"
-
             with col_target:
-                st.markdown(f"""
-                <div style="background: linear-gradient(145deg, #161922, #11131a); border: 1px solid #232734; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #232734; padding-bottom: 8px; margin-bottom: 10px;">
-                        <span style="font-size: 17px; font-weight: bold; color: #ffffff;">💳 {c_banco}</span>
-                        <span style="background: {tag_bg}; color: {tag_cor}; border: 1px solid {tag_cor}; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600;">
-                            {tag_status}
-                        </span>
-                    </div>
-                    {aviso_config}
-                    <div style="margin-top: 6px;">
-                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase;">Fatura a Pagar em {mes_selecionado}</div>
-                        <div style="font-size: 22px; font-weight: bold; color: #f43f5e; margin-top: 2px;">R$ {fatura_mes_total:,.2f}</div>
-                        <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Vence dia <b>{venc_dia:02d}</b></div>
-                    </div>
-                    <div style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed #232734;">
-                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase;">Já na Próxima Fatura</div>
-                        <div style="font-size: 18px; font-weight: bold; color: #38bdf8; margin-top: 2px;">R$ {val_prox_fatura:,.2f}</div>
-                        <div style="font-size: 10px; color: #94a3b8;">Compras a partir do dia {fech_dia:02d}</div>
-                    </div>
-                    <div style="margin-top: 8px; font-size: 11px; color: #10b981;">
-                        ⭐ <b>Melhor dia de compra:</b> Dia {fech_dia:02d} em diante
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                with st.container(border=True):
+                    head1, head2 = st.columns([1.5, 1])
+                    head1.subheader(f"💳 {c_banco}")
+                    if fatura_fechada:
+                        head2.error(f"Fechada (Venc. {venc_dia:02d})")
+                    else:
+                        head2.success(f"Aberta (Fecha {fech_dia:02d})")
+
+                    if not tem_config:
+                        st.caption("⚠️ Usando fechamento padrão (dia 20).")
+
+                    m1, m2 = st.columns(2)
+                    m1.metric(
+                        label=f"Fatura {mes_selecionado}",
+                        value=f"R$ {fatura_mes_total:,.2f}",
+                        help=f"Compras antes do dia {fech_dia:02d} + anteriores após fechamento"
+                    )
+                    m2.metric(
+                        label="Próxima Fatura",
+                        value=f"R$ {val_prox_fatura:,.2f}",
+                        help=f"Compras a partir do dia {fech_dia:02d}"
+                    )
+
+                    st.caption(f"⭐ **Melhor dia de compra:** Dia {fech_dia:02d} em diante • Vence dia **{venc_dia:02d}**")
 
         st.write("")
 
@@ -1002,14 +881,12 @@ elif menu == "⚙️ Configurar Renda e Regras":
 
     st.divider()
 
-    # EXPORTAÇÃO E BACKUP DOS DADOS (PDF & CSV / EXCEL)
     st.subheader("📥 Exportação e Backup dos Dados (PDF & CSV / Excel)")
     st.caption("Baixe relatórios executivos formatados em PDF ou planilhas para backup:")
 
     df_todos_gastos = pd.read_sql_query("SELECT * FROM gastos_diarios ORDER BY ano DESC, mes DESC, dia ASC", conn)
     df_todos_fixos = pd.read_sql_query("SELECT * FROM despesas_fixas", conn)
 
-    # SEÇÃO A: RELATÓRIOS FORMATADOS EM PDF
     st.markdown("##### 📄 Relatórios Prontos em PDF")
 
     if not REPORTLAB_DISPONIVEL:
@@ -1042,7 +919,6 @@ elif menu == "⚙️ Configurar Renda e Regras":
 
     st.write("")
 
-    # SEÇÃO B: BACKUP EM PLANILHA (CSV / EXCEL)
     st.markdown("##### 📊 Planilhas para Backup (CSV / Excel)")
     col_bk1, col_bk2 = st.columns(2)
     with col_bk1:
@@ -1132,11 +1008,10 @@ elif menu == "💸 Lançar Gasto Diário":
         else:
             cartao_banco_final = cartao_escolhido
 
-        # Feedback inteligente sobre a fatura
         if cartao_banco_final in cfgs_map and "Crédito" in forma_pag:
             fech_d, venc_d = cfgs_map[cartao_banco_final]
             if int(dia_sel) >= fech_d:
-                st.info(f"💡 **Ciclo do Cartão:** Como este lançamento é no dia {int(dia_sel):02d} (a partir do dia de corte {fech_d:02d}), ele será cobrado na **fatura do próximo mês** (vencimento dia {venc_d:02d})!")
+                st.info(f"💡 **Ciclo do Cartão:** Como este lançamento é no dia {int(dia_sel):02d} (a partir do corte dia {fech_d:02d}), entrará na **fatura do próximo mês** (vencimento dia {venc_d:02d})!")
             else:
                 st.caption(f"📌 Lançamento antes do fechamento (dia {fech_d:02d}). Entrará na fatura deste mês.")
 
@@ -1162,8 +1037,7 @@ elif menu == "💸 Lançar Gasto Diário":
     st.subheader("Histórico de Gastos Deste Mês")
     if not df_gastos.empty:
         df_exibir = df_gastos.copy()
-        
-        # Etiqueta de pagamento inteligente (indica se caiu na fatura atual ou próxima)
+
         def tag_fatura_hist(r):
             forma = str(r.get('forma_pagamento', 'PIX'))
             cartao = str(r.get('cartao_banco', '')).strip() if pd.notna(r.get('cartao_banco')) else ''
@@ -1341,28 +1215,11 @@ elif menu == "💰 Patrimônio":
     row_aporte_mes = cursor.fetchone()
     aporte_consolidado_mes = row_aporte_mes[0] if row_aporte_mes else None
 
+    # MÉTRICAS 100% NATIVAS
     c_p1, c_p2, c_p3 = st.columns(3)
-    with c_p1:
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid #10b981;">
-            <div class="metric-label">Patrimônio Atual Consolidado</div>
-            <div class="metric-num">R$ {patrimonio_atual_total:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c_p2:
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid #3b82f6;">
-            <div class="metric-label">Patrimônio Inicial Declarado</div>
-            <div class="metric-num">R$ {patrimonio_inicial:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c_p3:
-        st.markdown(f"""
-        <div class="metric-card" style="border-top: 3px solid #8b5cf6;">
-            <div class="metric-label">Total Poupado & Consolidado</div>
-            <div class="metric-num">R$ {total_aportado_historico:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
+    c_p1.metric("Patrimônio Atual Consolidado", f"R$ {patrimonio_atual_total:,.2f}")
+    c_p2.metric("Patrimônio Inicial Declarado", f"R$ {patrimonio_inicial:,.2f}")
+    c_p3.metric("Total Poupado & Consolidado", f"R$ {total_aportado_historico:,.2f}")
 
     st.divider()
 
@@ -1475,9 +1332,4 @@ elif menu == "💰 Patrimônio":
     )
 
     patrimonio_fim_ano = df_proj_tabela.iloc[-1]["Patrimônio Acumulado (R$)"]
-    st.markdown(f"""
-    <div class="success-box">
-        🎯 <b>Projeção Final de {ano_atual}:</b> Mantendo sua meta de poupança, você fechará o ano com 
-        <b>R$ {patrimonio_fim_ano:,.2f}</b> acumulados!
-    </div>
-    """, unsafe_allow_html=True)
+    st.success(f"🎯 **Projeção Final de {ano_atual}:** Mantendo sua meta de poupança, você fechará o ano com **R$ {patrimonio_fim_ano:,.2f}** acumulados!")
