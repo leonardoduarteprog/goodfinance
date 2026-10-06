@@ -310,6 +310,19 @@ menu = st.sidebar.radio(
     ]
 )
 
+# --- RECUPERAÇÃO DO PATRIMÔNIO (PARA USO GLOBAL) ---
+cursor.execute("SELECT saldo_inicial FROM patrimonio_base WHERE id = 1")
+row_base = cursor.fetchone()
+patrimonio_inicial = row_base[0] if row_base else 0.0
+
+df_aportes = pd.read_sql_query("SELECT ano, mes, valor, data_consolidacao FROM aportes_consolidados", conn)
+total_aportado_historico = df_aportes["valor"].sum() if not df_aportes.empty else 0.0
+patrimonio_atual_total = patrimonio_inicial + total_aportado_historico
+
+cursor.execute("SELECT valor FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
+row_aporte_mes = cursor.fetchone()
+aporte_consolidado_mes = row_aporte_mes[0] if row_aporte_mes else None
+
 # --- MAPA DE CONFIGURAÇÃO DE CARTÕES ---
 df_cfg_cartoes = pd.read_sql_query("SELECT cartao_banco, dia_fechamento, dia_vencimento FROM cartoes_config", conn)
 cfgs_map = {r["cartao_banco"]: (int(r["dia_fechamento"]), int(r["dia_vencimento"])) for _, r in df_cfg_cartoes.iterrows()}
@@ -336,7 +349,7 @@ saldo_restante_caixa = saldo_livre_mes - total_gasto_real
 hoje_dia = date.today().day
 mes_eh_atual = (ano_atual == date.today().year and mes_num == date.today().month)
 
-# --- CÁLCULO INTELIGENTE DO TETO DIÁRIO FIXO RESTANTE ---
+# --- CÁLCULO DO TETO DIÁRIO RESTANTE FIXO ---
 if mes_eh_atual:
     dias_restantes = max(1, dias_no_mes - hoje_dia + 1)
     teto_diario_restante = max(0.0, saldo_restante_caixa / dias_restantes)
@@ -525,8 +538,8 @@ if menu == "📊 Calendário e Gráfico Diário":
 
     st.write("")
 
-    # CARDS PRINCIPAIS 100% NATIVOS (COM META DIÁRIA RESTANTE CLARA)
-    col1, col2, col3, col4 = st.columns(4)
+    # CARDS PRINCIPAIS (5 MÉTRICAS: INCLUINDO PATRIMÔNIO EXISTENTE)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Orçamento Livre Inicial", f"R$ {saldo_livre_mes:,.2f}")
     col2.metric("Total Gasto Até Agora", f"R$ {total_gasto_real:,.2f}")
     col3.metric("Saldo Disponível em Caixa", f"R$ {saldo_restante_caixa:,.2f}")
@@ -534,6 +547,11 @@ if menu == "📊 Calendário e Gráfico Diário":
         "Teto Fixo / Dia Restante",
         f"R$ {teto_diario_restante:,.2f}",
         help=f"Saldo em caixa dividido igualmente pelos {dias_restantes} dias restantes no mês"
+    )
+    col5.metric(
+        "Patrimônio Existente",
+        f"R$ {patrimonio_atual_total:,.2f}",
+        help="Patrimônio inicial acumulado + economias consolidadas até hoje"
     )
 
     # AVISOS DE SALDO NATIVOS
@@ -1156,3 +1174,186 @@ elif menu == "📌 Gastos Fixos & Parcelas":
     if st.button("Salvar Despesa Fixa", type="primary", key="btn_salvar_fixo"):
         if f_nome.strip() == "":
             st.warning("Preencha o nome da conta.")
+        elif "Cartão" in f_forma_pag and f_cartao_banco_final.strip() == "":
+            st.warning("Por favor, informe qual cartão foi utilizado.")
+        else:
+            tipo_bd = "Parcela" if "Parcelamento" in f_tipo else "Fixo"
+            cursor.execute("""
+                INSERT INTO despesas_fixas (descricao, valor, tipo, parcela_atual, total_parcelas, forma_pagamento, cartao_banco)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (f_nome, f_val, tipo_bd, int(p_at), int(p_tot), f_forma_pag, f_cartao_banco_final.strip()))
+            conn.commit()
+            st.success("Conta fixa cadastrada com sucesso!")
+            st.rerun()
+
+    st.divider()
+
+    st.subheader("Contas Fixas e Parcelas Cadastradas")
+    if not df_fixos.empty:
+        df_mostrar_fixos = df_fixos.copy()
+        df_mostrar_fixos["Parcelas"] = df_mostrar_fixos.apply(
+            lambda r: f"{int(r['parcela_atual'])} / {int(r['total_parcelas'])}" if r["tipo"] == "Parcela" else "Contínuo",
+            axis=1
+        )
+        df_mostrar_fixos["Pagamento"] = df_mostrar_fixos.apply(
+            lambda r: f"{r['forma_pagamento']} ({r['cartao_banco']})" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else r.get('forma_pagamento', '-'),
+            axis=1
+        )
+        tabela_fixos = df_mostrar_fixos[["descricao", "tipo", "valor", "Parcelas", "Pagamento"]].copy()
+        tabela_fixos.columns = ["Descrição", "Tipo", "Valor Mensal", "Parcelas", "Forma de Pagamento"]
+
+        st.dataframe(
+            tabela_fixos.style.format({"Valor Mensal": "R$ {:,.2f}"}),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown("#### 🗑 Cancelar / Excluir Despesa Lançada Errada")
+        st.caption("Selecione um item que você lançou por engano ou que deseja encerrar:")
+
+        opcoes_fixos_excluir = {
+            f"{r['descricao']} ({r['tipo']}) — R$ {r['valor']:,.2f}" +
+            (f" [{int(r['parcela_atual'])}/{int(r['total_parcelas'])}]" if r['tipo'] == 'Parcela' else "") +
+            (f" [{r['cartao_banco']}]" if (pd.notna(r.get('cartao_banco')) and str(r.get('cartao_banco')).strip() != '') else "") +
+            f" (Cód #{r['id']})": int(r['id'])
+            for _, r in df_fixos.iterrows()
+        }
+
+        item_fixo_sel = st.selectbox(
+            "Selecione a conta para apagar:",
+            options=list(opcoes_fixos_excluir.keys()),
+            key="select_apagar_fixo"
+        )
+
+        if st.button("Cancelar / Apagar Esta Despesa", type="secondary"):
+            id_para_remover = opcoes_fixos_excluir[item_fixo_sel]
+            cursor.execute("DELETE FROM despesas_fixas WHERE id = ?", (id_para_remover,))
+            conn.commit()
+            st.success("Conta removida com sucesso! O orçamento livre foi recalculado.")
+            st.rerun()
+    else:
+        st.info("Nenhuma despesa fixa ou parcelamento cadastrado no momento.")
+
+# =========================================================
+# TELA 5: PATRIMÔNIO & PROJEÇÃO (RESTAURADA E COMPLETA)
+# =========================================================
+elif menu == "💰 Patrimônio":
+    st.title("Gestão de Patrimônio e Projeção de Reserva")
+
+    c_p1, c_p2, c_p3 = st.columns(3)
+    c_p1.metric("Patrimônio Atual Consolidado", f"R$ {patrimonio_atual_total:,.2f}")
+    c_p2.metric("Patrimônio Inicial Declarado", f"R$ {patrimonio_inicial:,.2f}")
+    c_p3.metric("Total Poupado & Consolidado", f"R$ {total_aportado_historico:,.2f}")
+
+    st.divider()
+
+    st.subheader("1. Definir Patrimônio Inicial")
+    st.caption("Informe quanto você já tem guardado/investido hoje (deixe 0 se estiver começando do zero):")
+
+    with st.form("form_patrimonio_base"):
+        novo_inicial = st.number_input(
+            "Patrimônio Inicial (R$)",
+            min_value=0.0,
+            value=float(patrimonio_inicial),
+            step=100.0
+        )
+        if st.form_submit_button("Atualizar Patrimônio Inicial"):
+            cursor.execute("UPDATE patrimonio_base SET saldo_inicial = ? WHERE id = 1", (novo_inicial,))
+            conn.commit()
+            st.success("Patrimônio inicial atualizado com sucesso!")
+            st.rerun()
+
+    st.divider()
+
+    st.subheader(f"2. Fechamento de {mes_selecionado}/{ano_atual}")
+    st.caption("Ao finalizar o mês, transfira o que você realmente conseguiu poupar para somar ao seu patrimônio:")
+
+    if aporte_consolidado_mes is not None:
+        st.info(f"✅ O mês de **{mes_selecionado}/{ano_atual}** já foi consolidado com um aporte de **R$ {aporte_consolidado_mes:,.2f}** no patrimônio.")
+        if st.button("Desfazer / Remover Consolidação deste Mês"):
+            cursor.execute("DELETE FROM aportes_consolidados WHERE ano = ? AND mes = ?", (ano_atual, mes_num))
+            conn.commit()
+            st.success("Consolidação removida.")
+            st.rerun()
+    else:
+        with st.form("form_consolidar_mes"):
+            sugestao_poupanca = float(meta_poupanca)
+            valor_consolidar = st.number_input(
+                f"Valor poupado em {mes_selecionado}/{ano_atual} a adicionar ao patrimônio (R$)",
+                min_value=0.0,
+                value=sugestao_poupanca,
+                step=50.0
+            )
+            if st.form_submit_button("Confirmar e Somar ao Patrimônio"):
+                data_hoje_str = str(date.today())
+                cursor.execute("""
+                    INSERT INTO aportes_consolidados (ano, mes, valor, data_consolidacao)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(ano, mes) DO UPDATE SET valor = excluded.valor, data_consolidacao = excluded.data_consolidacao
+                """, (ano_atual, mes_num, valor_consolidar, data_hoje_str))
+                conn.commit()
+                st.success(f"Excelente! R$ {valor_consolidar:,.2f} adicionados ao seu patrimônio!")
+                st.rerun()
+
+    st.divider()
+
+    st.subheader(f"3. Projeção Patrimonial — Ano de {ano_atual}")
+    st.caption(f"Previsão mês a mês somando o patrimônio inicial com aportes realizados e projetados (Meta base: R$ {meta_poupanca:,.2f}/mês):")
+
+    aportes_ano_map = {}
+    if not df_aportes.empty:
+        df_ano_atual = df_aportes[df_aportes["ano"] == ano_atual]
+        aportes_ano_map = dict(zip(df_ano_atual["mes"], df_ano_atual["valor"]))
+
+    acumulado_proj = patrimonio_inicial
+    dados_proj = []
+
+    for m_i, m_n in enumerate(meses_nomes, start=1):
+        if m_i in aportes_ano_map:
+            val_aporte = aportes_ano_map[m_i]
+            tipo_status = "✅ Consolidado"
+        else:
+            val_aporte = meta_poupanca
+            tipo_status = "🔮 Projetado"
+
+        acumulado_proj += val_aporte
+        dados_proj.append({
+            "Mês": m_n,
+            "m_num": m_i,
+            "Situação": tipo_status,
+            "Poupança / Aporte (R$)": val_aporte,
+            "Patrimônio Acumulado (R$)": acumulado_proj
+        })
+
+    df_proj_tabela = pd.DataFrame(dados_proj)
+
+    fig_proj = go.Figure()
+    fig_proj.add_trace(go.Scatter(
+        x=df_proj_tabela["Mês"],
+        y=df_proj_tabela["Patrimônio Acumulado (R$)"],
+        mode="lines+markers",
+        name="Patrimônio Total",
+        line=dict(color="#10b981", width=3),
+        marker=dict(size=7, color="#38bdf8")
+    ))
+
+    fig_proj.update_layout(
+        template="plotly_dark",
+        height=320,
+        margin=dict(l=10, r=10, t=20, b=10),
+        xaxis=dict(title="Mês"),
+        yaxis=dict(title="Patrimônio Acumulado (R$)")
+    )
+    st.plotly_chart(fig_proj, use_container_width=True)
+
+    st.dataframe(
+        df_proj_tabela[["Mês", "Situação", "Poupança / Aporte (R$)", "Patrimônio Acumulado (R$)"]].style.format({
+            "Poupança / Aporte (R$)": "R$ {:,.2f}",
+            "Patrimônio Acumulado (R$)": "R$ {:,.2f}"
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    patrimonio_fim_ano = df_proj_tabela.iloc[-1]["Patrimônio Acumulado (R$)"]
+    st.success(f"🎯 **Projeção Final de {ano_atual}:** Mantendo sua meta de poupança, você fechará o ano com **R$ {patrimonio_fim_ano:,.2f}** acumulados!")
